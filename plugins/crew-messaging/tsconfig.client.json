@@ -1,0 +1,17 @@
+{
+  "extends": "../../research/deepseek-harness/tsconfig.base.client.json",
+  "compilerOptions": {
+    "baseUrl": "../../research/deepseek-harness",
+    "ignoreDeprecations": "6.0",
+    "rootDir": "src",
+    "outDir": "lib",
+    "declarationDir": "lib/types",
+    "noEmit": false,
+    "composite": false,
+    "incremental": false,
+    "types": [],
+    "jsx": "react-jsx",
+    "lib": ["ES2024", "DOM", "DOM.Iterable"]
+  },
+  "include": ["src/client", "src/dashboard/types.ts", "src/css-modules.d.ts"]
+}

@@ -20,6 +20,20 @@ export interface ManagedDynamicBinding extends BindingConfig {
   readonly revision: number
 }
 
+/** Model-safe directory row. It deliberately excludes DSH and fabric internals. */
+export interface DirectoryEntry {
+  readonly address: string
+  readonly status: 'routable' | 'ambiguous' | 'conflict'
+  readonly source: 'configured' | 'session-title'
+}
+
+/** Desired bindings plus the human-facing status of every discovered alias. */
+export interface AddressPlan {
+  readonly all: readonly BindingConfig[]
+  readonly dynamic: readonly BindingConfig[]
+  readonly directory: readonly DirectoryEntry[]
+}
+
 /**
  * Merge explicit configuration with user-title discovery.
  *
@@ -30,7 +44,7 @@ export interface ManagedDynamicBinding extends BindingConfig {
 export function effectiveBindings(
   configured: readonly BindingConfig[],
   discovered: readonly DiscoveredBinding[],
-): { readonly all: readonly BindingConfig[]; readonly dynamic: readonly BindingConfig[] } {
+): AddressPlan {
   const configuredAddresses = new Set(configured.map(binding => addressKey(binding.address)))
   const configuredSessions = new Set(configured.map(binding => binding.sessionId))
   const grouped = new Map<string, DiscoveredBinding[]>()
@@ -42,12 +56,20 @@ export function effectiveBindings(
     grouped.set(key, values)
   }
   const dynamic: BindingConfig[] = []
+  const directory: DirectoryEntry[] = configured.map(binding => ({ address: binding.address, status: 'routable', source: 'configured' }))
   for (const values of grouped.values()) {
-    if (values.length !== 1) continue
+    if (values.length !== 1) {
+      const address = values.map(binding => binding.address).sort()[0]
+      if (address !== undefined) directory.push({ address, status: 'ambiguous', source: 'session-title' })
+      continue
+    }
     const [binding] = values
-    if (binding !== undefined) dynamic.push(binding)
+    if (binding !== undefined) {
+      dynamic.push(binding)
+      directory.push({ address: binding.address, status: 'routable', source: 'session-title' })
+    }
   }
-  return { all: [...configured, ...dynamic], dynamic }
+  return { all: [...configured, ...dynamic], dynamic, directory }
 }
 
 /** Case-insensitive identity used only to reject ambiguous human aliases. */

@@ -1,10 +1,25 @@
 import { Context, Service } from "@deepseek-ai/cordis";
 import { SessionEvent } from "@deepseek-ai/dsh-session";
 
+//#region src/addressing.d.ts
+/** Model-safe directory row. It deliberately excludes DSH and fabric internals. */
+interface DirectoryEntry {
+  readonly address: string;
+  readonly status: 'routable' | 'ambiguous' | 'conflict';
+  readonly source: 'configured' | 'session-title';
+}
+//#endregion
 //#region src/service.d.ts
 interface BindingConfig {
   address: string;
   sessionId: string;
+}
+/** Dashboard-safe adapter state; it contains neither a lease token nor a DSH identity. */
+interface CrewMessagingStatus {
+  readonly initialized: boolean;
+  readonly stopped: boolean;
+  readonly connected: boolean;
+  readonly leaseExpiresAt?: string;
 }
 interface CrewMessagingConfig {
   url?: string;
@@ -46,12 +61,23 @@ declare module '@deepseek-ai/dsh-llm' {
     };
   }
 }
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    crewMessaging: CrewMessagingProvider;
+  }
+}
 /** Cordis provider plus consumer: it owns only its adapter lease and created cold-root handles. */
 declare class CrewMessagingProvider extends Service {
   static inject: string[];
   private readonly runtime;
   private readonly service;
   constructor(ctx: Context, config?: CrewMessagingConfig);
+  /** Model-safe directory projection for other same-process plugin consumers. */
+  directory(): readonly DirectoryEntry[];
+  /** Model-safe local adapter state for other same-process plugin consumers. */
+  status(): CrewMessagingStatus;
+  /** Refresh subscription emitted after the directory map is coherent. */
+  onDirectoryChanged(listener: () => void): () => void;
 }
 /** Fold only durable explicit renames; automatic names never become fabric addresses. */
 declare function explicitUserTitle(events: readonly SessionEvent[]): string | undefined;
@@ -59,4 +85,4 @@ declare function explicitUserTitle(events: readonly SessionEvent[]): string | un
 declare function acceptedMessages(events: readonly SessionEvent[]): NativeMessage[];
 declare function apply(ctx: Context, config?: CrewMessagingConfig): void;
 //#endregion
-export { CrewMessagingProvider, acceptedMessages, apply, apply as default, explicitUserTitle };
+export { CrewMessagingProvider, type CrewMessagingStatus, type DirectoryEntry, acceptedMessages, apply, apply as default, explicitUserTitle };

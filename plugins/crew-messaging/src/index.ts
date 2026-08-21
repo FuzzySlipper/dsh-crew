@@ -10,14 +10,23 @@ import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import { FabricClient } from './http.ts'
-import { CrewMessagingService, type CrewMessagingConfig, type NativeMessage, type RuntimeAgent } from './service.ts'
+import { CrewMessagingService, type CrewMessagingConfig, type CrewMessagingStatus, type DirectoryEntry, type NativeMessage, type RuntimeAgent } from './service.ts'
 import type { AddressDiscovery, DiscoveredBinding } from './addressing.ts'
 import { frameCrewDelivery } from './framing.ts'
 import { installScopedTools } from './tools.ts'
+import { CREW_DASHBOARD_PATH, crewDashboardHandler, dashboardTuning } from './dashboard/host.ts'
+
+interface WebRouteHost { register(route: { kind: 'exact'; path: string; handler: ReturnType<typeof crewDashboardHandler> }): () => void }
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     'crew-messaging': { kind: 'crew-messaging'; messageId: string; deliveryId: string; senderAddress: string; recipientAddress: string; form: 'relay' }
+  }
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    crewMessaging: CrewMessagingProvider
   }
 }
 
@@ -31,12 +40,28 @@ export class CrewMessagingProvider extends Service {
     super(ctx, 'crewMessaging')
     this.runtime = new DshRuntime(ctx)
     this.service = new CrewMessagingService(new FabricClient(config.url ?? 'http://127.0.0.1:8787'), this.runtime, config, this.runtime)
+    const dashboard = crewDashboardHandler({
+      adapter: this.service,
+      tuning: dashboardTuning(config),
+      fabricUrl: config.url ?? 'http://127.0.0.1:8787',
+    })
+    ctx.inject(['webServer'], webCtx => {
+      const webServer = webCtx.get('webServer') as WebRouteHost
+      webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_DASHBOARD_PATH, handler: dashboard }), 'crew-messaging: dashboard route')
+    })
     const disposeTools = installScopedTools(ctx, this.service)
     ctx.effect(() => {
       void this.service.start().catch(error => ctx.logger.warn(`crew messaging start: ${String(error)}`))
       return async () => { disposeTools(); await this.service.dispose(); await this.runtime.dispose() }
     }, 'crewMessaging.lifecycle()')
   }
+
+  /** Model-safe directory projection for other same-process plugin consumers. */
+  directory(): readonly DirectoryEntry[] { return this.service.directory() }
+  /** Model-safe local adapter state for other same-process plugin consumers. */
+  status(): CrewMessagingStatus { return this.service.status() }
+  /** Refresh subscription emitted after the directory map is coherent. */
+  onDirectoryChanged(listener: () => void): () => void { return this.service.onDirectoryChanged(listener) }
 }
 
 class DshRuntime implements AddressDiscovery {
@@ -165,5 +190,7 @@ export function acceptedMessages(events: readonly SessionEvent[]): NativeMessage
 }
 
 export function apply(ctx: Context, config: CrewMessagingConfig = {}): void { ctx.plugin(CrewMessagingProvider, config) }
+
+export type { CrewMessagingStatus, DirectoryEntry } from './service.ts'
 
 export default apply

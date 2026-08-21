@@ -17,5 +17,6 @@
       "@deepseek-ai/dsh-session-title": ["packages/session/session-title/lib/types/index.d.ts"]
     }
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["src/client", "tests/cockpit.spec.ts"]
 }

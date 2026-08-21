@@ -197,6 +197,57 @@ describe('CrewMessagingService', () => {
     expect(fabric.bindings.find(item => item.address === 'bravo')?.target_ref).toBe('s2')
     expect(fabric.bindWrites).toBe(1)
     expect(fabric.unbound).toEqual([])
+    expect(adapter.directory()).toEqual([
+      { address: 'alpha', status: 'conflict', source: 'session-title' },
+      { address: 'bravo', status: 'routable', source: 'session-title' },
+    ])
     await adapter.dispose()
+  })
+  it('publishes ambiguous aliases once, restores them after resolution, and rejects local sends to ambiguity', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime(); const discovery = new FakeDiscovery()
+    discovery.values = [{ address: 'Beta', sessionId: 's2' }, { address: 'beta', sessionId: 's3' }]
+    const adapter = new CrewMessagingService(fabric, runtime, { bindings: [{ address: 'alpha', sessionId: 's1' }], pollMs: 60_000 }, discovery)
+    await adapter.start()
+    expect(adapter.directory()).toEqual([
+      { address: 'alpha', status: 'routable', source: 'configured' },
+      { address: 'Beta', status: 'ambiguous', source: 'session-title' },
+    ])
+    await expect(adapter.send('s1', 'ambiguous', 'beta', 'hello')).rejects.toThrow('recipient "Beta" is ambiguous')
+    discovery.change([{ address: 'beta', sessionId: 's2' }])
+    await (adapter as any).addressingTail
+    expect(adapter.addresses('s2')).toEqual(['beta'])
+    expect(adapter.directory()).toContainEqual({ address: 'beta', status: 'routable', source: 'session-title' })
+    await adapter.dispose()
+  })
+  it('submits the directory canonical alias after a case-insensitive lookup', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime(); const discovery = new FakeDiscovery()
+    discovery.values = [{ address: 'Beta', sessionId: 's2' }]
+    const adapter = new CrewMessagingService(fabric, runtime, { bindings: [{ address: 'alpha', sessionId: 's1' }], pollMs: 60_000 }, discovery)
+    await adapter.start()
+    await adapter.send('s1', 'canonical-case', 'beta', 'hello')
+    expect(fabric.submitted.at(-1)?.recipient_address).toBe('Beta')
+    await adapter.dispose()
+  })
+  it('lists a cold discovered recipient without exposing its session identity', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime(); const discovery = new FakeDiscovery()
+    discovery.values = [{ address: 'cold-reviewer', sessionId: 'cold-session-id' }]
+    const adapter = new CrewMessagingService(fabric, runtime, { pollMs: 60_000 }, discovery)
+    await adapter.start()
+    expect(adapter.directory()).toEqual([{ address: 'cold-reviewer', status: 'routable', source: 'session-title' }])
+    expect(JSON.stringify(adapter.directory())).not.toContain('cold-session-id')
+    expect(adapter.status()).toMatchObject({ initialized: true, stopped: false, connected: true })
+    await adapter.dispose()
+    expect(adapter.status()).toMatchObject({ initialized: true, stopped: true, connected: false })
+  })
+  it('notifies directory listeners only after a coherent refresh and clears them on disposal', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime(); const discovery = new FakeDiscovery()
+    discovery.values = [{ address: 'alpha', sessionId: 's1' }]
+    const adapter = new CrewMessagingService(fabric, runtime, { pollMs: 60_000 }, discovery)
+    let changes = 0
+    adapter.onDirectoryChanged(() => { changes += 1; expect(adapter.addresses('s1')).toEqual(['alpha']) })
+    await adapter.start()
+    expect(changes).toBe(1)
+    await adapter.dispose()
+    expect((adapter as any).directoryListeners.size).toBe(0)
   })
 })

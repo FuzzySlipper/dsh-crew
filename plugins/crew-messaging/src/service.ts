@@ -1,8 +1,12 @@
 import { capabilities, nativeAttempt, operation, type Binding, type Claim, type Delivery, type Lease, type Message } from './protocol.ts'
-import { effectiveBindings, type AddressDiscovery, type ManagedDynamicBinding } from './addressing.ts'
+import { addressKey, effectiveBindings, type AddressDiscovery, type AddressPlan, type DirectoryEntry, type ManagedDynamicBinding } from './addressing.ts'
 import { FabricError } from './http.ts'
 
+export type { DirectoryEntry } from './addressing.ts'
+
 export interface BindingConfig { address: string; sessionId: string }
+/** Dashboard-safe adapter state; it contains neither a lease token nor a DSH identity. */
+export interface CrewMessagingStatus { readonly initialized: boolean; readonly stopped: boolean; readonly connected: boolean; readonly leaseExpiresAt?: string }
 export interface CrewMessagingConfig {
   url?: string; adapterId?: string; instanceId?: string; bindings?: BindingConfig[]
   leaseDuration?: string; renewMs?: number; pollMs?: number; claimDuration?: string; ttl?: string
@@ -45,6 +49,8 @@ export class CrewMessagingService {
   private readonly config: Required<CrewMessagingConfig>
   private readonly configuredBindings: readonly BindingConfig[]
   private effective: readonly BindingConfig[]
+  private directoryEntries: readonly DirectoryEntry[] = []
+  private readonly directoryListeners = new Set<() => void>()
   private managedDynamic = new Map<string, ManagedDynamicBinding>()
   private readonly tails = new Map<string, Promise<void>>()
   private lease: Lease | undefined
@@ -61,7 +67,7 @@ export class CrewMessagingService {
     this.config = { ...defaults, url: config.url ?? 'http://127.0.0.1:8787', bindings: config.bindings ?? [], ...config }
     validateBindings(this.config.bindings)
     this.configuredBindings = this.config.bindings
-    this.effective = this.configuredBindings
+    this.effective = []
     this.disposeStatus = runtime.onStatus(agent => { if (agent.status === 'idle') this.observe(this.pumpAfterAddressing(agent.sessionId)) })
   }
 
@@ -75,14 +81,29 @@ export class CrewMessagingService {
     this.disposeDiscovery?.()
     this.disposeStatus()
     while (this.inFlight.size > 0) await Promise.all([...this.inFlight])
+    this.directoryListeners.clear()
   }
 
   addresses(sessionId: string): string[] { return this.effective.filter(binding => binding.sessionId === sessionId).map(binding => binding.address) }
+  directory(): readonly DirectoryEntry[] { return this.directoryEntries }
+  status(): CrewMessagingStatus {
+    return {
+      initialized: this.initialized,
+      stopped: this.stopped,
+      connected: !this.stopped && this.lease !== undefined,
+      ...(this.lease?.expires_at === undefined || this.lease.expires_at.length === 0 ? {} : { leaseExpiresAt: this.lease.expires_at }),
+    }
+  }
+  onDirectoryChanged(listener: () => void): () => void { this.directoryListeners.add(listener); return () => { this.directoryListeners.delete(listener) } }
   async send(sessionId: string, callId: string, recipientAddress: string, text: string, replyToMessageId?: string): Promise<{ messageId: string; replayed: boolean }> {
     const senderAddress = this.addresses(sessionId)[0]
     if (senderAddress === undefined) throw new Error('crew messaging: calling session is not bound')
+    const recipient = this.directoryEntries.find(entry => entry.address === recipientAddress)
+      ?? this.directoryEntries.find(entry => addressKey(entry.address) === addressKey(recipientAddress))
+    if (recipient === undefined) throw new Error(`crew messaging: unknown recipient "${recipientAddress}"`)
+    if (recipient.status !== 'routable') throw new Error(`crew messaging: recipient "${recipient.address}" is ${recipient.status}`)
     const lease = await this.ensureLease()
-    const result = await this.fabric.submit({ producer_id: this.config.adapterId, lease_token: lease.lease_token, operation_id: `${sessionId}:${callId}`, sender_address: senderAddress, recipient_address: recipientAddress, body: text, activation_policy: 'wake_when_idle', ttl: this.config.ttl, ...(replyToMessageId === undefined ? {} : { reply_to_message_id: replyToMessageId }) })
+    const result = await this.fabric.submit({ producer_id: this.config.adapterId, lease_token: lease.lease_token, operation_id: `${sessionId}:${callId}`, sender_address: senderAddress, recipient_address: recipient.address, body: text, activation_policy: 'wake_when_idle', ttl: this.config.ttl, ...(replyToMessageId === undefined ? {} : { reply_to_message_id: replyToMessageId }) })
     return { messageId: result.message.message_id, replayed: result.replayed }
   }
 
@@ -123,18 +144,23 @@ export class CrewMessagingService {
     if (this.stopped) return
     const discovered = this.discovery === undefined ? [] : await this.discovery.discover()
     const desired = effectiveBindings(this.configuredBindings, discovered)
-    await this.bind(desired.all, desired.dynamic)
+    await this.bind(desired)
   }
-  private async bind(wanted: readonly BindingConfig[], dynamic: readonly BindingConfig[]): Promise<void> {
+  private async bind(plan: AddressPlan): Promise<void> {
+    const { all: wanted, dynamic } = plan
     const lease = await this.ensureLease(); const existing = await this.fabric.listBindings()
     const currentByAddress = new Map(existing.addresses.map(binding => [binding.address, binding]))
     const nextManaged = new Map<string, ManagedDynamicBinding>()
     const dynamicByAddress = new Map(dynamic.map(binding => [binding.address, binding]))
+    const conflicts = new Set<string>()
     const active: BindingConfig[] = []
     for (const binding of wanted) {
       const current = currentByAddress.get(binding.address)
       const isDynamic = dynamicByAddress.has(binding.address)
-      if (isDynamic && current?.bound && current.adapter_id !== this.config.adapterId) continue
+      if (isDynamic && current?.bound && current.adapter_id !== this.config.adapterId) {
+        conflicts.add(binding.address)
+        continue
+      }
       if (current?.bound && current.adapter_id === this.config.adapterId && current.target_ref === binding.sessionId && sameCapabilities(current)) {
         active.push(binding)
         if (isDynamic) {
@@ -146,7 +172,10 @@ export class CrewMessagingService {
       try {
         written = await this.fabric.putBinding(binding.address, { actor_adapter_id: this.config.adapterId, lease_token: lease.lease_token, adapter_id: this.config.adapterId, target_ref: binding.sessionId, capabilities, ...(current === undefined ? {} : { expected_revision: current.revision }) })
       } catch (error: unknown) {
-        if (isDynamic && error instanceof FabricError && error.code === 'adapter_mismatch') continue
+        if (isDynamic && error instanceof FabricError && error.code === 'adapter_mismatch') {
+          conflicts.add(binding.address)
+          continue
+        }
         throw error
       }
       currentByAddress.set(binding.address, written)
@@ -161,6 +190,12 @@ export class CrewMessagingService {
     }
     this.effective = active
     this.managedDynamic = nextManaged
+    this.publishDirectory(plan.directory.map(entry => conflicts.has(entry.address) ? { ...entry, status: 'conflict' } : entry))
+  }
+  private publishDirectory(entries: readonly DirectoryEntry[]): void {
+    if (sameDirectory(this.directoryEntries, entries)) return
+    this.directoryEntries = entries
+    for (const listener of this.directoryListeners) listener()
   }
   private pumpSession(sessionId: string): Promise<void> {
     const prior = this.tails.get(sessionId) ?? Promise.resolve()
@@ -237,6 +272,9 @@ export class CrewMessagingService {
 }
 
 function sameCapabilities(binding: Binding): boolean { return binding.capabilities.length === capabilities.length && capabilities.every(value => binding.capabilities.includes(value)) }
+function sameDirectory(left: readonly DirectoryEntry[], right: readonly DirectoryEntry[]): boolean {
+  return left.length === right.length && left.every((entry, index) => entry.address === right[index]?.address && entry.status === right[index]?.status && entry.source === right[index]?.source)
+}
 function validateBindings(bindings: readonly BindingConfig[]): void {
   const addresses = new Set<string>(); const sessions = new Set<string>()
   for (const binding of bindings) {

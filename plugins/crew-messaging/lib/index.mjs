@@ -111,14 +111,35 @@ function effectiveBindings(configured, discovered) {
 		grouped.set(key, values);
 	}
 	const dynamic = [];
+	const directory = configured.map((binding) => ({
+		address: binding.address,
+		status: "routable",
+		source: "configured"
+	}));
 	for (const values of grouped.values()) {
-		if (values.length !== 1) continue;
+		if (values.length !== 1) {
+			const address = values.map((binding) => binding.address).sort()[0];
+			if (address !== void 0) directory.push({
+				address,
+				status: "ambiguous",
+				source: "session-title"
+			});
+			continue;
+		}
 		const [binding] = values;
-		if (binding !== void 0) dynamic.push(binding);
+		if (binding !== void 0) {
+			dynamic.push(binding);
+			directory.push({
+				address: binding.address,
+				status: "routable",
+				source: "session-title"
+			});
+		}
 	}
 	return {
 		all: [...configured, ...dynamic],
-		dynamic
+		dynamic,
+		directory
 	};
 }
 /** Case-insensitive identity used only to reject ambiguous human aliases. */
@@ -127,7 +148,7 @@ function addressKey(address) {
 }
 //#endregion
 //#region src/service.ts
-const defaults = {
+const defaults$1 = {
 	adapterId: "dsh-crew-messaging",
 	instanceId: "dsh-crew-messaging-local",
 	leaseDuration: "2m",
@@ -146,6 +167,8 @@ var CrewMessagingService = class {
 	config;
 	configuredBindings;
 	effective;
+	directoryEntries = [];
+	directoryListeners = /* @__PURE__ */ new Set();
 	managedDynamic = /* @__PURE__ */ new Map();
 	tails = /* @__PURE__ */ new Map();
 	lease;
@@ -162,14 +185,14 @@ var CrewMessagingService = class {
 		this.runtime = runtime;
 		this.discovery = discovery;
 		this.config = {
-			...defaults,
+			...defaults$1,
 			url: config.url ?? "http://127.0.0.1:8787",
 			bindings: config.bindings ?? [],
 			...config
 		};
 		validateBindings(this.config.bindings);
 		this.configuredBindings = this.config.bindings;
-		this.effective = this.configuredBindings;
+		this.effective = [];
 		this.disposeStatus = runtime.onStatus((agent) => {
 			if (agent.status === "idle") this.observe(this.pumpAfterAddressing(agent.sessionId));
 		});
@@ -188,20 +211,41 @@ var CrewMessagingService = class {
 		this.disposeDiscovery?.();
 		this.disposeStatus();
 		while (this.inFlight.size > 0) await Promise.all([...this.inFlight]);
+		this.directoryListeners.clear();
 	}
 	addresses(sessionId) {
 		return this.effective.filter((binding) => binding.sessionId === sessionId).map((binding) => binding.address);
 	}
+	directory() {
+		return this.directoryEntries;
+	}
+	status() {
+		return {
+			initialized: this.initialized,
+			stopped: this.stopped,
+			connected: !this.stopped && this.lease !== void 0,
+			...this.lease?.expires_at === void 0 || this.lease.expires_at.length === 0 ? {} : { leaseExpiresAt: this.lease.expires_at }
+		};
+	}
+	onDirectoryChanged(listener) {
+		this.directoryListeners.add(listener);
+		return () => {
+			this.directoryListeners.delete(listener);
+		};
+	}
 	async send(sessionId, callId, recipientAddress, text, replyToMessageId) {
 		const senderAddress = this.addresses(sessionId)[0];
 		if (senderAddress === void 0) throw new Error("crew messaging: calling session is not bound");
+		const recipient = this.directoryEntries.find((entry) => entry.address === recipientAddress) ?? this.directoryEntries.find((entry) => addressKey(entry.address) === addressKey(recipientAddress));
+		if (recipient === void 0) throw new Error(`crew messaging: unknown recipient "${recipientAddress}"`);
+		if (recipient.status !== "routable") throw new Error(`crew messaging: recipient "${recipient.address}" is ${recipient.status}`);
 		const lease = await this.ensureLease();
 		const result = await this.fabric.submit({
 			producer_id: this.config.adapterId,
 			lease_token: lease.lease_token,
 			operation_id: `${sessionId}:${callId}`,
 			sender_address: senderAddress,
-			recipient_address: recipientAddress,
+			recipient_address: recipient.address,
 			body: text,
 			activation_policy: "wake_when_idle",
 			ttl: this.config.ttl,
@@ -259,19 +303,24 @@ var CrewMessagingService = class {
 		if (this.stopped) return;
 		const discovered = this.discovery === void 0 ? [] : await this.discovery.discover();
 		const desired = effectiveBindings(this.configuredBindings, discovered);
-		await this.bind(desired.all, desired.dynamic);
+		await this.bind(desired);
 	}
-	async bind(wanted, dynamic) {
+	async bind(plan) {
+		const { all: wanted, dynamic } = plan;
 		const lease = await this.ensureLease();
 		const existing = await this.fabric.listBindings();
 		const currentByAddress = new Map(existing.addresses.map((binding) => [binding.address, binding]));
 		const nextManaged = /* @__PURE__ */ new Map();
 		const dynamicByAddress = new Map(dynamic.map((binding) => [binding.address, binding]));
+		const conflicts = /* @__PURE__ */ new Set();
 		const active = [];
 		for (const binding of wanted) {
 			const current = currentByAddress.get(binding.address);
 			const isDynamic = dynamicByAddress.has(binding.address);
-			if (isDynamic && current?.bound && current.adapter_id !== this.config.adapterId) continue;
+			if (isDynamic && current?.bound && current.adapter_id !== this.config.adapterId) {
+				conflicts.add(binding.address);
+				continue;
+			}
 			if (current?.bound && current.adapter_id === this.config.adapterId && current.target_ref === binding.sessionId && sameCapabilities(current)) {
 				active.push(binding);
 				if (isDynamic) nextManaged.set(binding.address, {
@@ -291,7 +340,10 @@ var CrewMessagingService = class {
 					...current === void 0 ? {} : { expected_revision: current.revision }
 				});
 			} catch (error) {
-				if (isDynamic && error instanceof FabricError && error.code === "adapter_mismatch") continue;
+				if (isDynamic && error instanceof FabricError && error.code === "adapter_mismatch") {
+					conflicts.add(binding.address);
+					continue;
+				}
 				throw error;
 			}
 			currentByAddress.set(binding.address, written);
@@ -313,6 +365,15 @@ var CrewMessagingService = class {
 		}
 		this.effective = active;
 		this.managedDynamic = nextManaged;
+		this.publishDirectory(plan.directory.map((entry) => conflicts.has(entry.address) ? {
+			...entry,
+			status: "conflict"
+		} : entry));
+	}
+	publishDirectory(entries) {
+		if (sameDirectory(this.directoryEntries, entries)) return;
+		this.directoryEntries = entries;
+		for (const listener of this.directoryListeners) listener();
 	}
 	pumpSession(sessionId) {
 		const tail = (this.tails.get(sessionId) ?? Promise.resolve()).catch(() => {}).then(() => this.pumpOnce(sessionId));
@@ -439,6 +500,9 @@ var CrewMessagingService = class {
 function sameCapabilities(binding) {
 	return binding.capabilities.length === capabilities.length && capabilities.every((value) => binding.capabilities.includes(value));
 }
+function sameDirectory(left, right) {
+	return left.length === right.length && left.every((entry, index) => entry.address === right[index]?.address && entry.status === right[index]?.status && entry.source === right[index]?.source);
+}
 function validateBindings(bindings) {
 	const addresses = /* @__PURE__ */ new Set();
 	const sessions = /* @__PURE__ */ new Set();
@@ -485,6 +549,38 @@ const addressOutput = {
 		items: { type: "string" }
 	} }
 };
+const directoryOutput = {
+	type: "object",
+	additionalProperties: false,
+	properties: { entries: {
+		type: "array",
+		required: true,
+		items: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				address: {
+					type: "string",
+					required: true
+				},
+				status: {
+					type: "string",
+					required: true,
+					enum: [
+						"routable",
+						"ambiguous",
+						"conflict"
+					]
+				},
+				source: {
+					type: "string",
+					required: true,
+					enum: ["configured", "session-title"]
+				}
+			}
+		}
+	} }
+};
 const sendOutput = {
 	type: "object",
 	additionalProperties: false,
@@ -509,9 +605,25 @@ function output(value) {
 		text: JSON.stringify(value)
 	}];
 }
-/** Install tools only for roots named by explicit adapter bindings. */
+/** Reconcile installed session-scoped effects against the current effective roots. */
+function synchronizeScopedTools(roots, installed, hasAddress, install) {
+	for (const root of roots) if (hasAddress(root)) install(root);
+	else {
+		installed.get(root)?.();
+		installed.delete(root);
+	}
+	for (const [agent, dispose] of installed) if (!roots.includes(agent)) {
+		dispose();
+		installed.delete(agent);
+	}
+}
+/** Install tools only for roots with a currently effective fabric address. */
 function installScopedTools(ctx, service) {
 	const installed = /* @__PURE__ */ new Map();
+	const remove = (agent) => {
+		installed.get(agent)?.();
+		installed.delete(agent);
+	};
 	const install = (agent) => {
 		if (installed.has(agent) || !ctx.agents.roots().includes(agent) || service.addresses(String(agent.id)).length === 0) return;
 		const disposers = [];
@@ -531,6 +643,19 @@ function installScopedTools(ctx, service) {
 				},
 				async execute(_args, exec) {
 					return { addresses: service.addresses(String(caller(exec.agent, "crew_addresses").id)) };
+				}
+			})));
+			disposers.push(agent.ctx.tools.register(defineTool({
+				name: "crew_directory",
+				description: "List human fabric aliases and whether each is routable, ambiguous, or occupied by another adapter.",
+				parameters: {},
+				output: {
+					schema: directoryOutput,
+					render: (_args, value) => output(value)
+				},
+				async execute(_args, exec) {
+					caller(exec.agent, "crew_directory");
+					return { entries: [...service.directory()] };
 				}
 			})));
 			disposers.push(agent.ctx.tools.register(defineTool({
@@ -568,20 +693,161 @@ function installScopedTools(ctx, service) {
 			for (const dispose of disposers.reverse()) dispose();
 		});
 	};
-	for (const agent of ctx.agents.list()) install(agent);
+	const sync = (agent) => {
+		if (ctx.agents.roots().includes(agent) && service.addresses(String(agent.id)).length > 0) install(agent);
+		else remove(agent);
+	};
+	const syncAll = () => {
+		synchronizeScopedTools(ctx.agents.roots(), installed, (agent) => service.addresses(String(agent.id)).length > 0, install);
+	};
+	syncAll();
+	const stopDirectory = service.onDirectoryChanged(syncAll);
 	const stopCreated = ctx.on("agent/created", ({ agent }) => {
-		install(agent);
+		sync(agent);
 	});
 	const stopDisposed = ctx.on("agent/disposed", ({ agent }) => {
-		installed.get(agent)?.();
-		installed.delete(agent);
+		remove(agent);
 	});
 	return () => {
+		stopDirectory();
 		stopCreated();
 		stopDisposed();
 		for (const dispose of installed.values()) dispose();
 		installed.clear();
 	};
+}
+//#endregion
+//#region src/dashboard/host.ts
+/** Same-origin endpoint served by the DSH plugin. */
+const CREW_DASHBOARD_PATH = "/plugins/dsh-crew-messaging/dashboard";
+const defaults = {
+	leaseDuration: "2m",
+	renewMs: 45e3,
+	pollMs: 1e3,
+	claimDuration: "45s",
+	ttl: "24h",
+	acceptanceTimeoutMs: 1e3,
+	acceptancePollMs: 10
+};
+/** Resolve the tunable values shown by the read-only cockpit. */
+function dashboardTuning(config) {
+	return {
+		leaseDuration: config.leaseDuration ?? defaults.leaseDuration,
+		renewMs: config.renewMs ?? defaults.renewMs,
+		pollMs: config.pollMs ?? defaults.pollMs,
+		claimDuration: config.claimDuration ?? defaults.claimDuration,
+		ttl: config.ttl ?? defaults.ttl,
+		acceptanceTimeoutMs: config.acceptanceTimeoutMs ?? defaults.acceptanceTimeoutMs,
+		acceptancePollMs: config.acceptancePollMs ?? defaults.acceptancePollMs
+	};
+}
+/** Build the safe snapshot from one adapter and its trusted-loopback fabric. */
+async function crewDashboardSnapshot(input) {
+	const request = input.request ?? fetch;
+	const [ready, traffic] = await Promise.all([readJson(request, new URL("/readyz", input.fabricUrl)), readJson(request, new URL("/v1/traffic", input.fabricUrl))]);
+	return {
+		fabric: projectReadiness(ready),
+		adapter: input.adapter.status(),
+		directory: input.adapter.directory().map(projectDirectory),
+		tuning: input.tuning,
+		messages: projectMessages(traffic),
+		deliveries: projectDeliveries(traffic)
+	};
+}
+/** Own one response lifecycle for the same-origin, read-only endpoint. */
+function crewDashboardHandler(input) {
+	return async (request, response) => {
+		if (request.method !== "GET") {
+			response.writeHead(405, { allow: "GET" });
+			response.end();
+			return;
+		}
+		try {
+			const snapshot = await crewDashboardSnapshot(input);
+			response.writeHead(200, {
+				"content-type": "application/json; charset=utf-8",
+				"cache-control": "no-store"
+			});
+			response.end(JSON.stringify(snapshot));
+		} catch {
+			response.writeHead(503, {
+				"content-type": "application/json; charset=utf-8",
+				"cache-control": "no-store"
+			});
+			response.end(JSON.stringify({ error: "Crew messaging fabric is unavailable" }));
+		}
+	};
+}
+async function readJson(request, url) {
+	const response = await request(url, {
+		headers: { accept: "application/json" },
+		signal: AbortSignal.timeout(1500)
+	});
+	if (!response.ok) throw new Error(`fabric response ${String(response.status)}`);
+	return await response.json();
+}
+function projectReadiness(value) {
+	return {
+		ready: true,
+		status: text(object(value)?.status) ?? "ok"
+	};
+}
+function projectDirectory(value) {
+	return {
+		address: value.address,
+		status: value.status,
+		source: value.source
+	};
+}
+function projectMessages(value) {
+	return array(object(value)?.messages).slice(-20).reverse().flatMap((entry) => {
+		const id = text(entry.message_id);
+		const from = text(entry.sender_address);
+		const to = text(entry.recipient_address);
+		const createdAt = text(entry.created_at);
+		if (id === void 0 || from === void 0 || to === void 0 || createdAt === void 0) return [];
+		return [{
+			id,
+			from,
+			to,
+			createdAt,
+			preview: preview(text(entry.body) ?? ""),
+			...optional("replyTo", text(entry.reply_to_message_id))
+		}];
+	});
+}
+function projectDeliveries(value) {
+	return array(object(value)?.deliveries).slice(-20).reverse().flatMap((entry) => {
+		const id = text(entry.delivery_id);
+		const messageId = text(entry.message_id);
+		const recipient = text(entry.recipient_address);
+		const state = text(entry.state);
+		if (id === void 0 || messageId === void 0 || recipient === void 0 || state === void 0) return [];
+		const updatedAt = text(entry.terminal_at) ?? text(entry.dispatching_at) ?? text(entry.claimed_at) ?? text(entry.created_at);
+		return [{
+			id,
+			messageId,
+			recipient,
+			state,
+			...optional("action", text(entry.dispatch_action)),
+			...optional("updatedAt", updatedAt)
+		}];
+	});
+}
+function object(value) {
+	return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
+}
+function array(value) {
+	return Array.isArray(value) ? value.filter((entry) => object(entry) !== void 0) : [];
+}
+function text(value) {
+	return typeof value === "string" ? value : void 0;
+}
+function optional(key, value) {
+	return value === void 0 ? {} : { [key]: value };
+}
+function preview(value) {
+	return value.length <= 160 ? value : `${value.slice(0, 157)}...`;
 }
 //#endregion
 //#region src/index.ts
@@ -595,6 +861,19 @@ var CrewMessagingProvider = class extends Service {
 		super(ctx, "crewMessaging");
 		this.runtime = new DshRuntime(ctx);
 		this.service = new CrewMessagingService(new FabricClient(config.url ?? "http://127.0.0.1:8787"), this.runtime, config, this.runtime);
+		const dashboard = crewDashboardHandler({
+			adapter: this.service,
+			tuning: dashboardTuning(config),
+			fabricUrl: config.url ?? "http://127.0.0.1:8787"
+		});
+		ctx.inject(["webServer"], (webCtx) => {
+			const webServer = webCtx.get("webServer");
+			webCtx.effect(() => webServer.register({
+				kind: "exact",
+				path: CREW_DASHBOARD_PATH,
+				handler: dashboard
+			}), "crew-messaging: dashboard route");
+		});
 		const disposeTools = installScopedTools(ctx, this.service);
 		ctx.effect(() => {
 			this.service.start().catch((error) => ctx.logger.warn(`crew messaging start: ${String(error)}`));
@@ -604,6 +883,18 @@ var CrewMessagingProvider = class extends Service {
 				await this.runtime.dispose();
 			};
 		}, "crewMessaging.lifecycle()");
+	}
+	/** Model-safe directory projection for other same-process plugin consumers. */
+	directory() {
+		return this.service.directory();
+	}
+	/** Model-safe local adapter state for other same-process plugin consumers. */
+	status() {
+		return this.service.status();
+	}
+	/** Refresh subscription emitted after the directory map is coherent. */
+	onDirectoryChanged(listener) {
+		return this.service.onDirectoryChanged(listener);
 	}
 };
 var DshRuntime = class {

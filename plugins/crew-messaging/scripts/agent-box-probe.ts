@@ -77,6 +77,48 @@ function messageText(message: unknown): string {
   return content.flatMap(block => block.type === 'text' && block.text !== undefined ? [block.text] : []).join('')
 }
 
+interface DecodedCrewFrame {
+  header: {
+    type: 'crew_delivery'
+    message_id: string
+    from: string
+    to: string
+    kind: 'ordinary' | 'reply'
+    reply_to_message_id?: string
+  }
+  instruction: string
+  body: string
+}
+
+/** Decode the model-visible contract without depending on plugin internals. */
+function decodeCrewFrame(message: unknown): DecodedCrewFrame {
+  const lines = messageText(message).split('\n')
+  check(lines.length === 5, `crew delivery frame has unexpected line count: ${String(lines.length)}`)
+  check(lines[2] === '<crew-message-body encoding="json">', 'crew delivery frame lost its body marker')
+  check(lines[4] === '</crew-message-body>', 'crew delivery frame lost its closing marker')
+  const header = JSON.parse(lines[0]!) as Record<string, unknown>
+  check(header.type === 'crew_delivery', 'crew delivery frame has the wrong type')
+  check(typeof header.message_id === 'string' && header.message_id.length > 0, 'crew delivery frame lacks its message id')
+  check(typeof header.from === 'string' && header.from.length > 0, 'crew delivery frame lacks its sender alias')
+  check(typeof header.to === 'string' && header.to.length > 0, 'crew delivery frame lacks its recipient alias')
+  check(header.kind === 'ordinary' || header.kind === 'reply', 'crew delivery frame has the wrong kind')
+  if (header.kind === 'reply') check(typeof header.reply_to_message_id === 'string' && header.reply_to_message_id.length > 0, 'reply frame lacks its linked message id')
+  const body = JSON.parse(lines[3]!)
+  check(typeof body === 'string', 'crew delivery frame body is not a JSON string')
+  return {
+    header: {
+      type: 'crew_delivery',
+      message_id: header.message_id as string,
+      from: header.from as string,
+      to: header.to as string,
+      kind: header.kind,
+      ...(typeof header.reply_to_message_id === 'string' ? { reply_to_message_id: header.reply_to_message_id } : {}),
+    },
+    instruction: lines[1]!,
+    body,
+  }
+}
+
 async function sendTool(ctx: Context, agent: Agent, call: string, recipient: string, text: string, replyToMessageId?: string): Promise<void> {
   const result = await ctx.tools.execute({
     signal: AbortSignal.timeout(2_000),
@@ -133,10 +175,26 @@ async function main(): Promise<void> {
     check(alpha.status === 'running' && mock.requests.length === 2, 'beta delivery steered or cancelled alpha instead of preserving its active turn')
     const first = crewMessages(beta)[0]!
     check(first.source.messageId.length > 0, 'beta delivery lacks its fabric message identity')
+    const firstFrame = decodeCrewFrame(first)
+    check(firstFrame.header.message_id === first.source.messageId
+      && firstFrame.header.from === 'alpha'
+      && firstFrame.header.to === 'beta'
+      && firstFrame.header.kind === 'ordinary'
+      && firstFrame.body === 'hello beta', 'ordinary delivery frame lost its aliases, identity, or body')
+    check(firstFrame.instruction.includes(`recipient="alpha"`) && firstFrame.instruction.includes(`reply_to_message_id="${first.source.messageId}"`), 'ordinary delivery frame lost its linked-reply instruction')
 
     await sendTool(harness, beta, 'beta-reply', 'alpha', 'reply alpha', first.source.messageId)
     await until('alpha durable next-turn reply', () => nextTurnCrewCount(alpha) === 1)
     check(alpha.status === 'running' && mock.requests.length === 2, 'linked reply interrupted alpha instead of queuing next-turn work')
+    const reply = crewMessages(alpha)[0]!
+    const replyFrame = decodeCrewFrame(reply)
+    check(replyFrame.header.message_id === reply.source.messageId
+      && replyFrame.header.from === 'beta'
+      && replyFrame.header.to === 'alpha'
+      && replyFrame.header.kind === 'reply'
+      && replyFrame.header.reply_to_message_id === first.source.messageId
+      && replyFrame.body === 'reply alpha', 'linked reply frame lost aliases, identity, reply metadata, or body')
+    check(replyFrame.instruction.includes(`recipient="beta"`) && replyFrame.instruction.includes(`reply_to_message_id="${reply.source.messageId}"`), 'linked reply frame lost its next-reply instruction')
 
     const beforeInspection = { alphaEvents: alpha.session.events.length, betaEvents: beta.session.events.length, deliveries: (await fabric.deliveries()).deliveries.length }
     await fabric.listBindings()
@@ -152,8 +210,11 @@ async function main(): Promise<void> {
     await until('exact beta root resumed', () => harness.agents.roots().filter(agent => agent.id === SessionId('root-beta')).length === 1)
     const resumed = harness.agents.get(SessionId('root-beta'))!
     await until('two FIFO cold messages', () => crewMessages(resumed).length === 3)
-    const coldTexts = crewMessages(resumed).slice(-2).map(messageText)
+    const coldFrames = crewMessages(resumed).slice(-2).map(decodeCrewFrame)
+    const coldTexts = coldFrames.map(frame => frame.body)
     check(coldTexts.join('|') === 'cold one|cold two', `cold beta delivery was not FIFO: ${coldTexts.join('|')}`)
+    check(coldFrames.every(frame => frame.header.from === 'alpha' && frame.header.to === 'beta' && frame.header.kind === 'ordinary'), 'cold delivery frame lost its aliases or kind')
+    check(coldFrames.every(frame => frame.header.message_id.length > 0) && coldFrames[0]!.header.message_id !== coldFrames[1]!.header.message_id, 'cold delivery frames lost distinct message identities')
 
     await until('all four fabric acknowledgements', async () => {
       const values = await fabric.deliveries()
