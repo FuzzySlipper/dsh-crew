@@ -1,293 +1,75 @@
 # Experiment 03: DSH Web as a Crew Workbench
 
+Follow the shared [working principles](working-principles.md). Consult the current DSH [architecture](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/architecture.md), [Cordis primer](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cordis-primer.md), and [plugin publishing guide](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/publish.md). [Experimental Agent Teams](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/agent-team.md) may already provide roster, mailbox, and task coordination, so compose or extend it before Crew recreates them.
+
 ## Purpose
 
-Evaluate whether DSH's client-side Cordis application can replace the generic conversation-workbench responsibilities currently owned by Rusty View while Crew retains the organizational semantics that make the environment useful.
+Evaluate whether DSH's client-side Cordis application can become the deep conversation workbench for DSH-backed Crew agents while Rusty View remains the cross-runtime fleet and operations surface.
 
-The experiment should not begin by replacing Rusty View. It should let the two interfaces specialize:
+This is not a replacement decree. It gives each interface a job it can earn:
 
 ```text
-Rusty View
-  fleet and system control
-  native Crew / Codex / DSH runtime overview
-  provider and service health
-  review administration
-  compatibility access to existing sessions
-
-DSH Web
-  deep workbench for DSH-backed sessions
-  conversation and tool presentation
-  Crew identity, task, message, and review plugins
+Rusty View                         DSH Web
+fleet and system control           deep work on DSH-backed sessions
+all runtime and legacy access      conversation and tool presentation
+review administration              Crew-specific workbench contributions
 ```
 
-If DSH Web earns more responsibility, Rusty View can shrink naturally rather than being discarded by decree.
+## Hypothesis
 
-## Main hypothesis
+Crew should own the organizational semantics that make a workbench useful—identity, task, messaging, delegation, and review—not generic chat rendering, streaming projection, reconnection, history handling, tool trees, or browser-plugin lifecycle.
 
-DSH Web's plugin architecture can carry Crew-specific work surfaces without requiring Crew to own generic chat rendering, streaming projection, reconnection, large-history behavior, tool trees, model selectors, or browser plugin lifecycle.
+If public DSH composition can carry those semantics cleanly, Rusty View can remain smaller and focused. If it cannot, keeping Rusty View is a valid outcome rather than a reason to fork DSH Web.
 
-The desired result is:
+## Decision and ownership
 
-> Own the semantics that make the workbench Crew, not the machinery that makes it a workbench.
-
-## Why this matters
-
-Rusty View has grown into a substantial product because a serious agent UI must handle much more than chat bubbles:
-
-- streaming and partial result reconciliation;
-- huge and irregular histories;
-- tool-call trees and rich result presentation;
-- reconnect and missed-update recovery;
-- multiple runtime types;
-- session navigation and status;
-- settings, providers, health, and administration;
-- themes, layouts, and plugin surfaces;
-- background work, queues, steering, and cancellation.
-
-Even a modular implementation leaves Crew responsible for maintaining all of that substrate.
-
-DSH Web already treats the browser as a Cordis application. Host-selected client plugins are dynamically loaded, dependencies and lifecycle are governed through Cordis, and UI contributions are mediated through services and slots rather than direct cross-plugin component imports.
-
-## Proposed topology
+Keep the stock DSH workbench intact and add Crew value through host and client plugins, public services, events, and slots. The browser receives plain Crew contract data through the DSH host; it neither reaches the Rust implementation directly nor manipulates DSH conversation internals.
 
 ```text
-Rusty Crew services
-  agents / tasks / messages / review / catalog
-                │
-                ▼
-DSH host Crew bridge plugins
-                │
-         existing DSH web transport
-                │
-                ▼
-DSH client Crew services
-  ctx.crewAgents
-  ctx.crewTasks
-  ctx.crewMessages
-  ctx.crewReviews
-  ctx.crewCatalog
-                │
-                ▼
-Crew client UI plugins
-```
-
-The browser should receive plain contract data. It should not know the Rust service implementation or reach around the host plugin into Crew directly.
-
-## Compatibility rule
-
-Distinguish intended composition from accidental forking:
-
-| Change | Interpretation |
-|---|---|
-| Add a Crew client plugin through public services and slots | Intended extension |
-| Add Crew tool cards, details panels, settings, or navigation entries | Intended extension |
-| Replace an entire declared UI seat with a compatible Crew plugin | Deliberate substitution |
-| Add a small domain-neutral slot or contract upstream | Framework evolution |
-| Import DSH package-internal components or stores | Private API coupling |
-| Patch conversation/session/connection internals | Fork gravity |
-| Carry a permanent source patch stack | Experiment failure signal |
-
-The target count of modified upstream DSH source files is zero.
-
-## Initial client plugin set
-
-A practical first bundle could contain:
-
-```text
-@fuzzyslipper/dsh-client-crew-runtime
-  one typed connection to Crew domain data
-  immutable snapshots and subscription lifecycle
-
-@fuzzyslipper/dsh-client-crew-agent
-  persistent Crew identity, role, presence, and runtime badge
-
-@fuzzyslipper/dsh-client-crew-task
-  current task, ownership, related work, and status
-
-@fuzzyslipper/dsh-client-crew-messaging
-  inbox, direct message composition, and delegation visibility
-
-@fuzzyslipper/dsh-client-crew-review
-  exact-SHA review tickets, CI status, findings, and actions
-
-@fuzzyslipper/dsh-client-crew-toolview
-  rich presentation for Crew-specific tools and durable tickets
-```
-
-They may begin in one package, but the service boundaries should remain visible so they can separate later without architectural surgery.
-
-## First UI contributions
-
-Keep the stock DSH conversation workbench intact. Add only Crew-specific value:
-
-- a compact Crew identity and task header;
-- role, project, and organizational context;
-- an agent-message composer;
-- delegation and agent-team activity presentation;
-- a review/CI details panel;
-- native cards for Crew message, task, delegation, and review tools;
-- links between the DSH session and the wider Crew fleet/catalog view.
-
-This tests whether Crew's organizational world can inhabit DSH Web without changing its generic transcript machinery.
-
-## Layout strategy
-
-Use two stages.
-
-### Stage A: Keep the stock layout
-
-Contribute into declared slots and existing navigation/details surfaces.
-
-This is the safest test of extension quality because it minimizes assumptions about DSH client internals.
-
-### Stage B: Replace the root layout plugin if necessary
-
-If the work environment genuinely requires different spatial ergonomics, provide a complete Crew layout plugin that owns the root seat while continuing to expose compatible child seats for:
-
-- sidebar;
-- conversation;
-- details;
-- empty/session states;
-- optional organization or activity panes.
-
-This allows Crew to own desk arrangement without owning every renderer, store, and network pump underneath it.
-
-Do not begin with Stage B merely to reproduce Rusty View's appearance.
-
-## Data ownership
-
-The browser should project two authorities:
-
-```text
-DSH Session
-  canonical computational event log for the DSH-backed thread
-
 Crew services
-  canonical organizational metadata and workflow state
+  identity / tasks / messages / review / catalog
+             │
+             ▼
+DSH host Crew plugins ── DSH Web transport ── DSH client Crew plugins
+                                                    │
+                                                    ▼
+                                           Crew workbench contributions
 ```
 
-The UI may combine them, but it must retain provenance. For example:
+| Concern | Authority |
+|---|---|
+| DSH-backed session event log and conversation rendering | DSH |
+| Crew identity, organization, task, messaging, and review state | Rusty Crew |
+| Exact-SHA review ticket and CI result identity | Rusty Crew |
+| Browser display of both authorities | Derived client projection |
+| Fleet controls and legacy-session access | Rusty View |
 
-```text
-session event
-  source = dsh
-  session id
-  sequence number
+Do not place Crew workflow state into synthetic DSH transcript events merely for display. The workbench may join the two projections, but it keeps their origin visible.
 
-review status
-  source = crew
-  review ticket
-  exact commit SHA
-```
+## Contribution shape
 
-Do not copy Crew workflow state into fake DSH transcript events solely for presentation.
+The host plugin translates Crew domain data into the DSH-facing contract; client plugins render that contract in the declared workbench surfaces. A Crew contribution owns its own identity, task, message, or review presentation without taking ownership of DSH's generic conversation state.
 
-## Rusty View role during the experiment
+This leaves room for a different Crew layout only if the product demands it. Reproducing Rusty View's appearance is not enough reason to replace a DSH layout seat.
 
-Rusty View remains the cross-runtime fleet console and compatibility surface.
+## Public composition boundary
 
-It should:
+Crew may add a typed host connection, client services, tool cards, details panels, navigation, or a declared UI-seat replacement through documented extension points. It may propose a small domain-neutral upstream seam when one is genuinely missing.
 
-- list all Crew agents regardless of runtime;
-- show whether a session is native Crew, Codex, or DSH-backed;
-- retain operational controls not yet exposed through DSH;
-- link a DSH-backed session into its DSH Web workbench;
-- continue presenting legacy sessions;
-- provide fallback observability when the experimental client bundle breaks.
+Crew must not import DSH package internals, patch conversation/session/connection machinery, or maintain a private source patch stack. Work against the current checkout and the current `crew-dsh` profile; client features depend on Crew contracts and documented DSH surfaces, not transient internal stores.
 
-This prevents the DSH Web experiment from being blocked on universal runtime translation.
+Agent Teams is the first place to look for generic delegation, roster, mailbox, and task behavior. A Crew-specific browser or host service exists only when the product slice requires a Crew meaning that the DSH seam does not carry.
 
-## Cross-runtime question deferred
+## Minimum credible product slice
 
-Do not initially force native Crew and Codex-only sessions into DSH's session/event ontology so DSH Web can display everything.
+One DSH-backed Crew agent opens in stock DSH Web through the current `crew-dsh` profile. The workbench shows its Crew identity and current task, sends one Crew message, and renders a Crew review request as a native contribution. The same session receives asynchronous review or CI progress with Crew's exact-SHA review identity intact.
 
-That may later be addressed through:
+Rusty View continues to list and operate across native Crew, Codex, and DSH-backed sessions, and links this DSH-backed agent into the workbench. The slice is complete only when the host/client contributions are actually wired into this path; a mock panel, a general UI tour, or a second full fleet UI is not enough.
 
-- a foreign-session projection service;
-- importing or translating runtime-neutral events;
-- a separate client plugin that presents non-DSH sessions;
-- gradual migration as DSH becomes a more common execution substrate.
+The claimed session behavior must be observable in the product path, including the returned review state. Unsupported cross-runtime transcript projection remains plainly unsupported rather than being approximated by a second transcript authority.
 
-The first experiment is successful if DSH-backed agents have an excellent integrated workbench, not if DSH Web becomes a universal fleet UI immediately.
+## Supported limits and outcomes
 
-## Packaging model
+The first workbench supports deep work on DSH-backed sessions, not immediate display of every native Crew or Codex transcript. It does not promise a wholesale Rusty View migration, a generic rewrite of Crew review, or a separate Crew implementation of Agent Teams.
 
-Near-term DSH client extension may remain distribution-oriented rather than fully independent npm installation.
-
-The expected artifact is therefore:
-
-```text
-pinned DSH revision
-+ Crew host plugins
-+ Crew client plugins
-+ alternate profile/roster configuration
-```
-
-This is acceptable as long as upstream source remains unmodified.
-
-Keep all DSH compatibility knowledge in a narrow adapter layer. Client feature packages should depend on Crew contracts and documented DSH extension contracts, not on the pinned revision's internal stores.
-
-## Upgrade canary
-
-Each pinned DSH upgrade should run a focused browser canary:
-
-1. DSH host and client applications boot.
-2. Every Crew host/client fiber reaches active state.
-3. Expected service and slot topology is present.
-4. A session opens and receives streaming output.
-5. Crew identity and task data appear.
-6. A Crew message can be sent.
-7. A review ticket updates live.
-8. Reconnect restores durable session state.
-9. Plugin unload/reload removes and restores every owned contribution.
-10. No console errors or duplicate subscriptions remain.
-
-## Minimum credible implementation
-
-1. Run a pinned `crew-dsh` Web profile.
-2. Open one DSH-backed Crew agent session in stock DSH Web.
-3. Load a Crew client runtime service without upstream source edits.
-4. Display Crew identity, role, project, and current task.
-5. Send a Crew inter-agent message from the browser.
-6. Render a Crew review request as a native tool card.
-7. Show asynchronous CI/review progress in a details surface.
-8. Restart the host and reconnect the browser.
-9. Disable and re-enable the Crew UI bundle without ghost entries.
-10. Link the same agent from Rusty View into the DSH workbench.
-11. Upgrade the pinned DSH revision once.
-12. Confirm the private-import and upstream-patch counts remain zero.
-
-## Success criteria
-
-- Crew UI functionality is implemented entirely through public DSH client services, events, and slots.
-- The stock conversation renderer requires no Crew-specific modifications.
-- Crew domain state has one browser connection/service family rather than miscellaneous sockets.
-- Plugin lifecycle cleanly removes stores, subscriptions, and UI contributions.
-- Rusty View can remain smaller and focused rather than duplicating the workbench.
-- DSH upgrades mostly affect one compatibility adapter or roster.
-- The resulting environment is comfortable enough for daily development work.
-
-## Failure signals
-
-- Frequent imports from DSH `src` paths.
-- Crew plugins directly manipulating DSH conversation stores.
-- A growing patch stack against DSH Web internals.
-- UI slots are too coarse, forcing unrelated features into one owner.
-- Host and browser disagree about plugin or capability availability.
-- Crew workflow state is duplicated into DSH transcript state.
-- Rusty View and DSH Web both require full implementations of the same workbench feature.
-- Every DSH release breaks many Crew client packages.
-
-## Possible end states
-
-### DSH Web becomes the normal workbench
-
-Rusty View shrinks into fleet control, compatibility, and organization-wide observability.
-
-### The two remain complementary
-
-Rusty View handles the whole organization while DSH Web handles deep work on DSH sessions.
-
-### DSH Web proves too brittle or opinionated
-
-Crew keeps Rusty View, but can still reuse the host-side DSH execution experiments. This is a valid negative result and should not compromise the backend work.
+If the public plugin surface can carry the message, task, review, and durable session relationships without reaching into DSH internals, the workbench has earned wider use. If it cannot, document the missing seam and retain Rusty View and the host-side DSH experiment as complementary paths. That negative result is product evidence, not a failure to be hidden by framework ceremony.

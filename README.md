@@ -18,7 +18,7 @@ Rusty Crew currently owns a very large surface because missing seams repeatedly 
 DSH/Cordis would then own more of the generic machinery:
 
 - plugin composition and lifecycle;
-- tools, skills, memory, and model-provider ecosystems;
+- tools, skills, model-provider ecosystems, and any deliberately supplied external or future memory capability;
 - ordinary agent/session execution infrastructure;
 - browser workbench infrastructure;
 - inspectable service, event, and UI topology.
@@ -48,49 +48,37 @@ Every experiment should identify one authoritative owner for each durable fact. 
 - A UI projection is not a second transcript authority.
 - A process connection must not own the lifetime of durable work.
 
-### Prefer composition over private patches
+### Work from one shared posture
 
-The default compatibility budget is:
+The laboratory's product-first, moving-upstream posture is in [Working principles](docs/working-principles.md). In particular, DSH is extended through public Cordis composition, not private source patches; a recurring need to patch upstream is evidence about the experiment, not a reason to maintain a fork.
 
-- no permanent private DSH fork;
-- no imports from DSH package-internal `src` paths;
-- use public Cordis services, event contracts, slots, and plugin entrypoints;
-- pin an exact DSH revision and upgrade deliberately;
-- propose small domain-neutral seams upstream when a real extension point is missing;
-- treat recurring upstream source patches as evidence that the substrate has failed the experiment.
+### Keep composition legible
 
-### Generate evidence for human and agent governance
-
-The experiment should expose machine-readable topology wherever possible:
-
-- service providers and consumers;
-- event producers and listeners;
-- waterfall ordering and `prepend` use;
-- UI slot ownership;
-- lifecycle ownership;
-- cross-package and cross-process authority boundaries.
-
-Cheap drift checkers should be able to flag suspicious changes without reconstructing the entire architecture.
+Prefer named services, events, slots, and explicit owners over hidden coupling. DSH's generated catalogs are useful navigation aids, but producing topology reports or process gates is not an experiment deliverable.
 
 ## Experiment tracks
 
-### 1. [Rusty Crew ↔ DSH sidecar](experiment-01-crew-dsh-sidecar.md)
+### 1. [Rusty Crew ↔ DSH sidecar](docs/experiment-01-crew-dsh-sidecar.md)
 
 Make a DSH-backed agent a full Crew citizen through a durable duplex service boundary. Crew initially supervises DSH much as it supervises Codex App Server, but the DSH side is a real Cordis application that can gradually absorb generic harness responsibilities.
 
-### 2. [Codex App Server as a native DSH brain](experiment-02-codex-native-agent-factory.md)
+### 2. [Codex App Server as a native DSH brain](docs/experiment-02-codex-native-agent-factory.md)
 
 Implement Codex as a DSH `AgentFactory`/`Agent`, not merely as an `LlmAdapter` or one-shot subagent. This is the strongest available test of whether DSH truly permits a foreign model-native loop to inhabit the framework while retaining DSH sessions, plugins, UI, lifecycle, and Crew services.
 
-### 3. [DSH Web as a Crew workbench](experiment-03-dsh-web-crew-workbench.md)
+### 3. [DSH Web as a Crew workbench](docs/experiment-03-dsh-web-crew-workbench.md)
 
 Use DSH's client-side Cordis application as the generic conversation workbench while adding Crew identity, task, messaging, delegation, and review surfaces through host and client plugins. Rusty View remains the fleet/control surface during the experiment.
 
-### 4. [Per-agent swappable brain broker](experiment-04-swappable-brain-broker.md)
+### 4. [Per-agent swappable brain broker](docs/experiment-04-swappable-brain-broker.md)
 
 Explore the missing step between deployment-level loop replacement and true per-agent heterogeneity. The intended shape is a stable agent-factory broker routing named brain implementations such as the stock DSH loop, Codex App Server, and future model-native harnesses.
 
-## Shared proving scenario
+## Current investigation
+
+[Remote DSH Web over SSH](docs/trusted-lan-web.md) (Den task 7117) records the chosen loopback-only service and workstation forwarding arrangement. Direct LAN exposure remains deferred unless a product need cannot use SSH.
+
+## Shared product scenario
 
 The experiments should eventually converge on one credible end-to-end scenario:
 
@@ -98,13 +86,13 @@ The experiments should eventually converge on one credible end-to-end scenario:
 2. It is visible in both Rusty View and the DSH workbench.
 3. Its session survives process restart, connection loss, and cold hydration.
 4. It receives a durable message from another Crew agent.
-5. It uses DSH ecosystem capabilities such as memory, skills, or agent-team coordination.
+5. It uses DSH ecosystem capabilities such as skills or Agent Teams, or an explicitly external/future memory capability.
 6. It modifies a repository and requests Crew's existing exact-SHA review pipeline.
 7. CI/review results return asynchronously and become model-facing input at the correct boundary.
-8. A provider, memory plugin, UI plugin, or brain implementation can be changed without corrupting the durable session or organizational identity.
-9. Generated topology remains understandable enough for automated drift checks.
+8. A provider, external/future memory capability, UI plugin, or brain implementation can be changed without corrupting the durable session or organizational identity.
+9. The implementation remains understandable and changeable through public composition seams.
 
-A minimal prompt round trip does not prove this architecture. The target is a **minimum credible successor slice** containing one instance of each difficult relationship while avoiding premature feature breadth.
+A minimal prompt round trip is scaffolding. The target is a **minimum credible successor slice** containing one instance of each difficult relationship while avoiding premature feature breadth.
 
 ## Non-goals for the initial experiments
 
@@ -114,6 +102,10 @@ A minimal prompt round trip does not prove this architecture. The target is a **
 - Force Codex through a generic prompt/tool loop when the experiment is specifically testing native Codex behavior.
 - Replace Rusty View before the DSH workbench has earned that responsibility.
 - Stabilize DSH's pre-release APIs on its behalf.
+
+## Current DSH reference
+
+Read DSH's living docs for framework facts: [architecture](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/architecture.md), [Cordis primer](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cordis-primer.md), [plugin publishing](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/publish.md), and [experimental Agent Teams](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/agent-team.md). The latter may already cover roster, mailbox, and task coordination; compose or extend it before reproducing those concerns in Crew.
 
 ## Relevant repositories
 

@@ -1,311 +1,74 @@
 # Spatiotemporal Composability: Practical Summary for Implementers
 
+## Status and applicability
+
+This is conceptual background for reasoning about component ownership and lifecycle.
+
+It is not a DSH requirement, a demand for formal proof or exhaustive lifecycle testing, or a reason to add hardening or security ceremony or copy paper machinery into every plugin.
+
+Use the ideas proportionately with the local [working principles](working-principles.md) and the current upstream [Cordis primer](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cordis-primer.md).
+
+The current DSH source and documentation remain authoritative for a plugin's actual API and obligations.
+
 ## Core idea
 
-The paper defines an architecture for systems whose components can be loaded, unloaded, replaced, and reconfigured while the process remains alive.
+The paper describes a runtime in which components can be loaded, unloaded, replaced, and reconfigured while a process remains alive.
 
-It separates dynamic composition into two dimensions:
+Its useful practical distinction is between what a component **needs**, what it **provides**, and the effects it performs while active.
 
-- **Temporal composability:** when a component leaves, the runtime can retract the changes that component made without disturbing unrelated components.
-- **Spatial composability:** components declare what they require and provide, and the runtime reacts as those dependencies appear, disappear, or change provider.
+Temporal composability concerns undoing one component's contribution when it leaves.
 
-A compact way to remember the model is:
+Spatial composability concerns the declared dependencies and provisions through which components meet.
 
-> A component declares what it needs, declares what it may provide, and performs shared-state changes through operations that return their own undo logic.
+## Effects and coeffects
 
-## 1. Revertible effects
+An **effect** is a component-owned change to shared state, such as registering a tool, listener, route, or child component.
 
-An **effect** is a change a component makes to its environment:
+The effect returns a disposer for that particular change.
 
-- registering a tool
-- installing an event listener
-- adding a route
-- opening a connection
-- inserting an entry into a registry
-- creating a child component
-- modifying shared state
+As effects accumulate, their disposers can undo the component's work in reverse order when it unloads.
 
-A revertible effect returns both its result and an inverse capable of retracting that particular change:
+A **coeffect** is a dependency a component requires.
 
-```ts
-ctx.effect(() => {
-  const handle = registry.add(value)
+A runtime can activate a component when its requirements are available, deactivate it when they are not, and reconsider it when the identity of a provider changes.
 
-  return () => {
-    registry.remove(handle)
-  }
-})
-```
+Dependency identity matters: an equivalent replacement can still have different lifecycle implications.
 
-Conceptually:
+The context is consequently a dependency environment and an ownership boundary for the effects mediated through it.
 
-```text
-current context
-    -> modified context
-    + inverse for this modification
-```
+## Fibers and provider withdrawal
 
-The runtime records each inverse as the effect occurs. The inverses are composed in last-in-first-out order, so a component's teardown is derived from its activation rather than maintained as a separate parallel program.
+A live component instance, or **fiber**, records the component's lifecycle, dependency view, provided services, and accumulated cleanup.
 
-This changes cleanup from:
+Nested contexts let a parent own the children and registrations created beneath it.
 
-```text
-remember to write a complete unload function later
-```
+When a provider leaves, consumers may need that provider to finish their own cleanup.
 
-into:
+The paper therefore separates withdrawing a provider from destroying its resources:
 
-```text
-every atomic mutation carries its cleanup locally
-```
+1. New consumers stop resolving the provider.
+2. Existing dependents drain while retaining their committed dependency view.
+3. The provider's effects are released.
 
-A component may perform many effects. Their inverses accumulate into one disposer representing everything that component currently owns.
+This is an ownership and ordering idea, not a promise that every arbitrary operation can be reversed.
 
-## 2. Reactive coeffects
+## Limits
 
-A **coeffect** is something a component requires from its environment:
+The runtime can track only changes made through its context or another controlled boundary.
 
-```ts
-export const inject = ['sessions', 'tools', 'llm']
-```
+It cannot prove that a supplied disposer is correct, retract hidden global mutations, or undo external emissions such as a sent message.
 
-A component activates only when all required services are available. Whenever the context changes, the runtime compares the component's previous dependency state with the new one and classifies the change as:
+Order-sensitive work, detached background activity, and irreversible domain actions need explicit local ownership decisions.
 
-- **activating:** previously unsatisfied, now satisfied
-- **deactivating:** previously satisfied, now unsatisfied
-- **neutral:** satisfaction did not change
+The composition model is not a security boundary or a substitute for process isolation.
 
-The runtime then starts, stops, or leaves the component alone accordingly. 
-Dependency identity matters, not only value equality. If one provider is replaced by another provider exposing an equivalent value, dependents may still need to reload because the provider and its lifecycle have changed.
+## Practical local implications
 
-## 3. The unified context
+For DSH/Cordis work, the paper is a useful prompt to ask:
 
-Effects and coeffects operate through one first-class **context**.
+- Which plugin owns this registration, resource, or background activity?
+- Which current service and lifecycle boundary should mediate it?
+- Does cleanup need an explicit disposer, and does teardown ordering matter?
+- Is this an internal acquisition that can be released, or an external emission that needs domain-specific handling?
 
-The context acts as:
-
-- the service/dependency environment
-- the shared-state mediation layer
-- the owner of effect tracking
-- the place where scoped or isolated service resolution occurs
-- the boundary through which component interactions become attributable
-
-Loading a component executes effects against a derived context. Unloading it applies the accumulated inverses. Nested contexts allow parent components to own child components and all registrations made beneath them.
-
-A useful informal name for this is:
-
-> a dependency context with receipts
-
-## 4. Components and fibers
-
-A component has three logical parts:
-
-```text
-requirements
-provisions
-effect program
-```
-
-More concretely:
-
-- **Requirements:** services or keys the component consumes.
-- **Provisions:** services or keys the component may install.
-- **Effects:** the operations performed while active, together with their inverses.
-
-A live instantiation of a component is called a **fiber**. A fiber records information such as:
-
-- component identity
-- parent fiber
-- current lifecycle state
-- committed dependency resolution
-- services it currently provides
-- accumulated disposer
-- failure or retirement state
-
-A practical lifecycle is:
-
-```text
-Inactive
-   -> Reloading
-   -> Active
-   -> Unloading
-   -> Inactive
-```
-
-`Reloading` and `Unloading` exist because real activation and teardown may be asynchronous, incremental, cancellable, or fallible.
-
-## 5. Safe provider withdrawal
-
-Provider teardown is deliberately split into two moments:
-
-1. The provider stops advertising itself as available.
-2. The provider waits for existing dependents to deactivate.
-3. The provider finally runs its own accumulated inverses.
-
-This matters because a dependent's teardown may still need the provider it was using. For example, a consumer closing borrowed connections may need the connection pool to remain usable during cleanup.
-
-The runtime therefore preserves each active component's **committed dependency view** through its teardown. The provider becomes unavailable to new work, but existing dependents retain access until their own unloading finishes. Only then is the provider's underlying state withdrawn.
-
-This produces dependency ordering similar to:
-
-```text
-provider activates
-    -> consumer activates
-    -> provider announces withdrawal
-    -> consumer unloads using provider
-    -> provider unloads
-```
-
-## 6. Independent and order-sensitive effects
-
-Removing one component from an interleaved runtime is safe only when its effects can be separated from the effects of other components.
-
-The paper models this through **independence** and commutation:
-
-```text
-A then B  ≈  B then A
-```
-
-Typical independent operations include registering different keys in a map or adding unrelated entries to a set-like registry.
-
-Order-sensitive operations include:
-
-- ordered middleware chains
-- transformations where later behavior depends on earlier output
-- mutations of one shared sequential resource
-- operations whose returned inverse changes depending on foreign state
-
-The design rule is:
-
-- Put commuting contributions behind independently retractable effects.
-- Keep order-sensitive operations inside one component's LIFO disposer, or represent their ordering through explicit dependencies.
-- Do not assume arbitrary event handlers or middleware are independent merely because they are implemented as separate plugins.
-
-## 7. Observational equivalence
-
-“Recovered” does not mean that every byte of process state is restored exactly.
-
-Examples:
-
-- freeing memory does not restore the allocator's previous internal layout
-- generating and discarding an ID does not rewind the ID generator
-- reopening a resource may produce a different operating-system handle
-
-Instead, states are considered equivalent when no operation exposed through the relevant interface can distinguish them.
-
-This is **observational equivalence**:
-
-```text
-different internal representation
-+ identical externally observable behavior
-= equivalent recovered state
-```
-
-
-
-## 8. Iteration, asynchrony, and failure
-
-A component may activate through several incremental steps. Each completed step adds its inverse to the current accumulator.
-
-At an iteration boundary, the runtime may discover that the component's dependency target has changed. It can then stop activation and retract only the effects completed so far.
-
-For asynchronous work already in flight, the operation may be unable to stop instantly. The in-flight step is allowed to land, its inverse is recorded, and the component immediately transitions into unloading.
-
-If activation fails, the component also transitions through unloading so that all successfully installed earlier effects are recovered before the failure is recorded.
-
-The intended invariant is:
-
-```text
-partial activation never leaves partial ownership stranded
-```
-
-## 9. System-level guarantees
-
-Under the paper's assumptions, the model establishes several useful properties:
-
-- **Recovery exactness:** unloading one component removes its contribution while preserving independent work performed by other components.
-- **Dependency ordering:** consumers activate after providers and finish unloading before providers complete withdrawal.
-- **Progress:** with an acyclic dependency graph and finite activation structure, lifecycle reconciliation eventually reaches a quiescent state rather than deadlocking.
-- **Confluence:** once the system settles, its state corresponds to the state that would have resulted from assembling the final surviving configuration from scratch, regardless of the intermediate reload history.
-
-These guarantees are conditional, not magical. They depend on components respecting the composition discipline.
-
-## 10. Important limits
-
-### The runtime trusts inverses
-
-The implementation can record and compose the disposer a component supplies, but it cannot generally prove that the disposer genuinely reverses the operation.
-
-Correct atomic inverses remain an obligation on the effect author.
-
-### Only mediated effects are tracked
-
-An operation must pass through the composition context or another controlled interface to become lifecycle-owned.
-
-Hidden global mutation, ambient singleton access, detached timers, and unregistered background work remain outside the guarantee.
-
-### External emissions are not normally reversible
-
-There is a difference between:
-
-```text
-acquire connection -> close connection
-```
-
-and:
-
-```text
-send message -> unsend message
-```
-
-Acquisitions can often be structurally reversed. Emissions that cross the system boundary generally require either:
-
-- withholding until commit
-- a domain-specific compensating action
-- acceptance that they are irreversible
-
-
-
-### Composition is not sandboxing
-
-Dependency declarations can support capability-style access control, but untrusted code running in the same unrestricted language runtime can bypass those conventions. True isolation requires a process, runtime, WebAssembly boundary, container, or other sandbox.
-
-## 11. Implementation checklist
-
-A system following this paradigm should aim for these rules:
-
-1. Every shared-state mutation goes through an owned context operation.
-2. Every atomic registration or acquisition returns an idempotent disposer.
-3. Composite teardown is derived by composing atomic disposers in reverse order.
-4. Components declare dependencies rather than discovering them through ambient lookup.
-5. Provider identity is recorded when a component activates.
-6. A provider stops satisfying new consumers before destroying resources.
-7. Provider destruction waits for existing dependents to finish unloading.
-8. Async activation records cleanup incrementally.
-9. Activation failure routes through ordinary teardown.
-10. Multiple providers are represented explicitly through isolation, brokering, or a registry.
-11. Order-sensitive interactions are not disguised as independent effects.
-12. External emissions are treated separately from reversible acquisitions.
-13. Component, dependency, event, and ownership topology is made inspectable.
-14. Lifecycle tests include replacement, partial activation, failure, dependency withdrawal, and repeated disposal.
-
-## Working mental model
-
-```text
-Component
-  requires: [services it needs]
-  provides: [services it may install]
-
-  activate(context):
-    perform effect
-      -> record inverse
-
-    perform effect
-      -> record inverse
-
-  deactivate():
-    dependents drain
-    inverses run in reverse order
-```
-
-The paper's central claim is not that arbitrary programs can be automatically reversed. It is that a runtime can provide strong dynamic-composition guarantees when component interactions are expressed through declared dependencies and locally paired effect/inverse operations.
+Those questions complement, rather than replace, the current [Cordis primer](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cordis-primer.md) and DSH subsystem documentation.

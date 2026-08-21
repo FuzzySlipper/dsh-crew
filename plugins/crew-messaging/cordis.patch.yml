@@ -1,0 +1,10 @@
+# Local-current-source Crew messaging adapter. Configuration is explicit so a
+# profile selects exactly which roots may speak for fabric addresses.
+- insert:
+    - id: crew-messaging
+      name: dsh-crew-messaging
+      config:
+        url: !!js process.env.DSH_CREW_MESSAGING_URL || 'http://127.0.0.1:8787'
+        adapterId: !!js process.env.DSH_CREW_MESSAGING_ADAPTER_ID || 'dsh-crew-messaging'
+        instanceId: !!js process.env.DSH_CREW_MESSAGING_INSTANCE_ID || 'dsh-crew-messaging-local'
+        bindings: !!js process.env.DSH_CREW_MESSAGING_BINDINGS ? JSON.parse(process.env.DSH_CREW_MESSAGING_BINDINGS) : []
