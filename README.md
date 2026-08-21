@@ -78,6 +78,11 @@ Explore the missing step between deployment-level loop replacement and true per-
 
 [Remote DSH Web over SSH](docs/trusted-lan-web.md) (Den task 7117) records the chosen loopback-only service and workstation forwarding arrangement. Direct LAN exposure remains deferred unless a product need cannot use SSH.
 
+[Next Crew messaging runtime adapter](docs/next-runtime-adapter-survey.md)
+records why the first non-DSH slice should bridge `crew-services` into Rusty
+Crew direct-brain sessions, leaving Crew's session/wake authority intact and
+deferring managed Codex thread/turn reconciliation to a second slice.
+
 ## Shared product scenario
 
 The experiments should eventually converge on one credible end-to-end scenario:
