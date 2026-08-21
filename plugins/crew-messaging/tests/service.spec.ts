@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { CrewMessagingService, type CrewRuntime, type Fabric, type NativeMessage, type RuntimeAgent } from '../src/service.ts'
+import type { AddressDiscovery, DiscoveredBinding } from '../src/addressing.ts'
 import type { Binding, Claim, Delivery, Lease, Message } from '../src/protocol.ts'
 
 const binding = (address: string, sessionId: string, generation = 1): Binding => ({ address, bound: true, adapter_id: 'dsh-crew-messaging', target_ref: sessionId, capabilities: ['deliver_when_idle', 'durable_next_turn', 'wake_inactive'], revision: 1, generation })
@@ -8,7 +9,7 @@ const delivery = (id: string, recipient = 'beta'): Delivery => ({ delivery_id: i
 
 class FakeFabric implements Fabric {
   readonly bindings = [binding('alpha', 's1'), binding('beta', 's2')]
-  readonly submitted: Record<string, unknown>[] = []; readonly begun: string[] = []; readonly released: string[] = []; readonly acked: string[] = []; readonly unknowns: string[] = []
+  readonly submitted: Record<string, unknown>[] = []; readonly begun: string[] = []; readonly released: string[] = []; readonly unbound: string[] = []; readonly acked: string[] = []; readonly unknowns: string[] = []
   registerCalls = 0; bindWrites = 0; registerFailures = 0
   queue: Claim[] = []; dispatching: Delivery[] = []
   async register(): Promise<Lease> { this.registerCalls += 1; if (this.registerFailures > 0) { this.registerFailures -= 1; throw new Error('fabric unavailable') }; return { adapter_id: 'dsh-crew-messaging', instance_id: 'local', lease_token: 'lease', expires_at: '' } }
@@ -16,9 +17,18 @@ class FakeFabric implements Fabric {
   async listBindings(): Promise<{ addresses: Binding[] }> { return { addresses: this.bindings } }
   async putBinding(address: string, body: Record<string, unknown>): Promise<Binding> {
     this.bindWrites += 1
-    const next = { ...binding(address, String(body.target_ref)), revision: 1 }
     const index = this.bindings.findIndex(item => item.address === address)
+    const current = index === -1 ? undefined : this.bindings[index]
+    const next = { ...binding(address, String(body.target_ref), (current?.generation ?? 0) + 1), revision: (current?.revision ?? 0) + 1 }
     if (index === -1) this.bindings.push(next); else this.bindings[index] = next
+    return next
+  }
+  async unbind(address: string): Promise<Binding> {
+    this.unbound.push(address)
+    const current = this.bindings.find(item => item.address === address)
+    if (current === undefined) throw new Error(`missing ${address}`)
+    const next = { ...current, bound: false, revision: current.revision + 1, generation: current.generation + 1 }
+    this.bindings[this.bindings.indexOf(current)] = next
     return next
   }
   async submit(body: Record<string, unknown>): Promise<{ message: Message; delivery: Delivery; replayed: boolean }> { this.submitted.push(body); return { message: envelope('out', String(body.recipient_address)), delivery: delivery('out', String(body.recipient_address)), replayed: this.submitted.length > 1 } }
@@ -41,6 +51,18 @@ class FakeRuntime implements CrewRuntime {
   message(d: Delivery, m: Message): NativeMessage { return { id: d.delivery_id, text: m.body, source: { kind: 'crew-messaging', messageId: m.message_id, deliveryId: d.delivery_id, senderAddress: m.sender_address, recipientAddress: m.recipient_address, form: 'relay' } } }
   onStatus(listener: (agent: RuntimeAgent) => void): () => void { this.events.push(listener); return () => { this.events.splice(this.events.indexOf(listener), 1) } }
   agent(id: string, status: 'idle' | 'running'): RuntimeAgent { return { sessionId: id, status, followup: message => { const accepted = this.accepted.get(id) ?? []; accepted.push(message); this.accepted.set(id, accepted) } } }
+}
+
+class FakeDiscovery implements AddressDiscovery {
+  values: readonly DiscoveredBinding[] = []
+  failure: Error | undefined
+  readonly listeners = new Set<() => void>()
+  async discover(): Promise<readonly DiscoveredBinding[]> {
+    if (this.failure !== undefined) throw this.failure
+    return this.values
+  }
+  onChanged(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
+  change(values: readonly DiscoveredBinding[]): void { this.values = values; for (const listener of this.listeners) listener() }
 }
 
 function service(fabric = new FakeFabric(), runtime = new FakeRuntime()): [CrewMessagingService, FakeFabric, FakeRuntime] {
@@ -113,5 +135,68 @@ describe('CrewMessagingService', () => {
     const fabric = new FakeFabric(); const runtime = new FakeRuntime()
     expect(() => new CrewMessagingService(fabric, runtime, { bindings: [{ address: 'alpha', sessionId: 's1' }, { address: 'alpha', sessionId: 's2' }] })).toThrow('duplicate address')
     expect(() => new CrewMessagingService(fabric, runtime, { bindings: [{ address: 'alpha', sessionId: 's1' }, { address: 'beta', sessionId: 's1' }] })).toThrow('duplicate sessionId')
+  })
+  it('retires a renamed dynamic title after binding its replacement', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime(); const discovery = new FakeDiscovery()
+    discovery.values = [{ address: 'alpha', sessionId: 's1' }]
+    const adapter = new CrewMessagingService(fabric, runtime, { pollMs: 60_000 }, discovery)
+    await adapter.start()
+    expect(fabric.bindWrites).toBe(0)
+    discovery.change([{ address: 'bravo', sessionId: 's1' }])
+    await (adapter as any).addressingTail
+    expect(adapter.addresses('s1')).toEqual(['bravo'])
+    expect(fabric.bindings.find(item => item.address === 'bravo')?.target_ref).toBe('s1')
+    expect(fabric.unbound).toEqual(['alpha'])
+    await adapter.dispose()
+  })
+  it('retains the prior dynamic map when a catalog scan fails', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime(); const discovery = new FakeDiscovery()
+    discovery.values = [{ address: 'alpha', sessionId: 's1' }]
+    const adapter = new CrewMessagingService(fabric, runtime, { pollMs: 60_000 }, discovery)
+    await adapter.start()
+    discovery.failure = new Error('persistence unavailable')
+    await expect((adapter as any).enqueueAddressing()).rejects.toThrow('persistence unavailable')
+    expect(adapter.addresses('s1')).toEqual(['alpha'])
+    expect(fabric.unbound).toEqual([])
+    await adapter.dispose()
+  })
+  it('does not retire a dynamic binding whose revision moved outside this adapter', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime(); const discovery = new FakeDiscovery()
+    discovery.values = [{ address: 'alpha', sessionId: 's1' }]
+    const adapter = new CrewMessagingService(fabric, runtime, { pollMs: 60_000 }, discovery)
+    await adapter.start()
+    const alpha = fabric.bindings.find(item => item.address === 'alpha')!
+    fabric.bindings[fabric.bindings.indexOf(alpha)] = { ...alpha, revision: alpha.revision + 1 }
+    discovery.change([{ address: 'bravo', sessionId: 's1' }])
+    await (adapter as any).addressingTail
+    expect(adapter.addresses('s1')).toEqual(['bravo'])
+    expect(fabric.unbound).toEqual([])
+    await adapter.dispose()
+  })
+  it('retires a disappeared dynamic root but retains a configured override', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime(); const discovery = new FakeDiscovery()
+    discovery.values = [{ address: 'alpha', sessionId: 's1' }]
+    const adapter = new CrewMessagingService(fabric, runtime, { bindings: [{ address: 'beta', sessionId: 's2' }], pollMs: 60_000 }, discovery)
+    await adapter.start()
+    discovery.change([])
+    await (adapter as any).addressingTail
+    expect(adapter.addresses('s1')).toEqual([])
+    expect(adapter.addresses('s2')).toEqual(['beta'])
+    expect(fabric.unbound).toEqual(['alpha'])
+    await adapter.dispose()
+  })
+  it('skips a foreign dynamic alias while binding other discovered aliases', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime(); const discovery = new FakeDiscovery()
+    fabric.bindings[0] = { ...fabric.bindings[0]!, adapter_id: 'another-adapter', target_ref: 'foreign-root' }
+    discovery.values = [{ address: 'alpha', sessionId: 's1' }, { address: 'bravo', sessionId: 's2' }]
+    const adapter = new CrewMessagingService(fabric, runtime, { pollMs: 60_000 }, discovery)
+    await adapter.start()
+    expect(adapter.addresses('s1')).toEqual([])
+    expect(adapter.addresses('s2')).toEqual(['bravo'])
+    expect(fabric.bindings.find(item => item.address === 'alpha')?.adapter_id).toBe('another-adapter')
+    expect(fabric.bindings.find(item => item.address === 'bravo')?.target_ref).toBe('s2')
+    expect(fabric.bindWrites).toBe(1)
+    expect(fabric.unbound).toEqual([])
+    await adapter.dispose()
   })
 })

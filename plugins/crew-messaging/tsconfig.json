@@ -10,7 +10,12 @@
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["node", "vitest/globals"]
+    "ignoreDeprecations": "6.0",
+    "types": ["node", "vitest/globals"],
+    "baseUrl": "../../research/deepseek-harness",
+    "paths": {
+      "@deepseek-ai/dsh-session-title": ["packages/session/session-title/lib/types/index.d.ts"]
+    }
   },
   "include": ["src/**/*.ts", "tests/**/*.ts"]
 }

@@ -29,6 +29,7 @@ export class FabricClient {
   }
   listBindings(): Promise<{ addresses: Binding[] }> { return this.call('/v1/addresses') }
   putBinding(address: string, body: Record<string, unknown>): Promise<Binding> { return this.call(`/v1/addresses/${encodeURIComponent(address)}/binding`, 'PUT', body) }
+  unbind(address: string, body: Record<string, unknown>): Promise<Binding> { return this.call(`/v1/addresses/${encodeURIComponent(address)}/binding`, 'DELETE', body) }
   submit(body: Record<string, unknown>): Promise<{ message: Message; delivery: Delivery; replayed: boolean }> { return this.call('/v1/messages', 'POST', body) }
   claim(body: Record<string, unknown>): Promise<Claim> { return this.call('/v1/deliveries/claim', 'POST', body) }
   begin(deliveryId: string, body: Record<string, unknown>): Promise<Delivery> { return this.call(`/v1/deliveries/${encodeURIComponent(deliveryId)}/begin-dispatch`, 'POST', body) }

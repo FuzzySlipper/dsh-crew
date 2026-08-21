@@ -1,4 +1,5 @@
 import { Service } from "@deepseek-ai/cordis";
+import { foldSessionTitle } from "@deepseek-ai/dsh-session-title";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { resolveSessionPreset } from "@deepseek-ai/dsh-agent-presets";
 import { defineTool } from "@deepseek-ai/dsh-tools";
@@ -50,6 +51,9 @@ var FabricClient = class {
 	putBinding(address, body) {
 		return this.call(`/v1/addresses/${encodeURIComponent(address)}/binding`, "PUT", body);
 	}
+	unbind(address, body) {
+		return this.call(`/v1/addresses/${encodeURIComponent(address)}/binding`, "DELETE", body);
+	}
 	submit(body) {
 		return this.call("/v1/messages", "POST", body);
 	}
@@ -87,6 +91,41 @@ function nativeAttempt(deliveryId) {
 	return `dsh-crew:${deliveryId}:native`;
 }
 //#endregion
+//#region src/addressing.ts
+/**
+* Merge explicit configuration with user-title discovery.
+*
+* Configured rows win both their session and their case-insensitive address.
+* A title shared case-insensitively by two roots is omitted entirely rather
+* than selecting whichever catalog row happened to arrive first.
+*/
+function effectiveBindings(configured, discovered) {
+	const configuredAddresses = new Set(configured.map((binding) => addressKey(binding.address)));
+	const configuredSessions = new Set(configured.map((binding) => binding.sessionId));
+	const grouped = /* @__PURE__ */ new Map();
+	for (const binding of discovered) {
+		if (configuredAddresses.has(addressKey(binding.address)) || configuredSessions.has(binding.sessionId)) continue;
+		const key = addressKey(binding.address);
+		const values = grouped.get(key) ?? [];
+		values.push(binding);
+		grouped.set(key, values);
+	}
+	const dynamic = [];
+	for (const values of grouped.values()) {
+		if (values.length !== 1) continue;
+		const [binding] = values;
+		if (binding !== void 0) dynamic.push(binding);
+	}
+	return {
+		all: [...configured, ...dynamic],
+		dynamic
+	};
+}
+/** Case-insensitive identity used only to reject ambiguous human aliases. */
+function addressKey(address) {
+	return address.toLowerCase();
+}
+//#endregion
 //#region src/service.ts
 const defaults = {
 	adapterId: "dsh-crew-messaging",
@@ -103,7 +142,11 @@ const defaults = {
 var CrewMessagingService = class {
 	fabric;
 	runtime;
+	discovery;
 	config;
+	configuredBindings;
+	effective;
+	managedDynamic = /* @__PURE__ */ new Map();
 	tails = /* @__PURE__ */ new Map();
 	lease;
 	leaseRenewedAt = 0;
@@ -112,9 +155,12 @@ var CrewMessagingService = class {
 	timer;
 	inFlight = /* @__PURE__ */ new Set();
 	disposeStatus;
-	constructor(fabric, runtime, config = {}) {
+	disposeDiscovery;
+	addressingTail = Promise.resolve();
+	constructor(fabric, runtime, config = {}, discovery) {
 		this.fabric = fabric;
 		this.runtime = runtime;
+		this.discovery = discovery;
 		this.config = {
 			...defaults,
 			url: config.url ?? "http://127.0.0.1:8787",
@@ -122,11 +168,14 @@ var CrewMessagingService = class {
 			...config
 		};
 		validateBindings(this.config.bindings);
+		this.configuredBindings = this.config.bindings;
+		this.effective = this.configuredBindings;
 		this.disposeStatus = runtime.onStatus((agent) => {
-			if (agent.status === "idle") this.observe(this.pumpSession(agent.sessionId));
+			if (agent.status === "idle") this.observe(this.pumpAfterAddressing(agent.sessionId));
 		});
 	}
 	async start() {
+		this.disposeDiscovery = this.discovery?.onChanged(() => this.observe(this.enqueueAddressing()));
 		try {
 			await this.initialize();
 		} finally {
@@ -136,11 +185,12 @@ var CrewMessagingService = class {
 	async dispose() {
 		this.stopped = true;
 		if (this.timer !== void 0) clearTimeout(this.timer);
+		this.disposeDiscovery?.();
 		this.disposeStatus();
 		while (this.inFlight.size > 0) await Promise.all([...this.inFlight]);
 	}
 	addresses(sessionId) {
-		return this.config.bindings.filter((binding) => binding.sessionId === sessionId).map((binding) => binding.address);
+		return this.effective.filter((binding) => binding.sessionId === sessionId).map((binding) => binding.address);
 	}
 	async send(sessionId, callId, recipientAddress, text, replyToMessageId) {
 		const senderAddress = this.addresses(sessionId)[0];
@@ -175,14 +225,15 @@ var CrewMessagingService = class {
 				return;
 			}
 			await this.ensureLease();
-			await Promise.all(this.config.bindings.map((binding) => this.pumpSession(binding.sessionId)));
+			await this.enqueueAddressing();
+			await Promise.all(this.effective.map((binding) => this.pumpSession(binding.sessionId)));
 		} finally {
 			this.schedule();
 		}
 	}
 	async initialize() {
 		await this.ensureLease();
-		await this.bind();
+		await this.enqueueAddressing();
 		await this.reconcile();
 		this.initialized = true;
 	}
@@ -196,21 +247,72 @@ var CrewMessagingService = class {
 		}
 		return this.lease;
 	}
-	async bind() {
+	pumpAfterAddressing(sessionId) {
+		return this.addressingTail.catch(() => {}).then(() => this.pumpSession(sessionId));
+	}
+	enqueueAddressing() {
+		const tail = this.addressingTail.catch(() => {}).then(() => this.refreshAddressing());
+		this.addressingTail = tail;
+		return tail;
+	}
+	async refreshAddressing() {
+		if (this.stopped) return;
+		const discovered = this.discovery === void 0 ? [] : await this.discovery.discover();
+		const desired = effectiveBindings(this.configuredBindings, discovered);
+		await this.bind(desired.all, desired.dynamic);
+	}
+	async bind(wanted, dynamic) {
 		const lease = await this.ensureLease();
 		const existing = await this.fabric.listBindings();
-		for (const wanted of this.config.bindings) {
-			const current = existing.addresses.find((binding) => binding.address === wanted.address);
-			if (current?.bound && current.adapter_id === this.config.adapterId && current.target_ref === wanted.sessionId && sameCapabilities(current)) continue;
-			await this.fabric.putBinding(wanted.address, {
-				actor_adapter_id: this.config.adapterId,
-				lease_token: lease.lease_token,
-				adapter_id: this.config.adapterId,
-				target_ref: wanted.sessionId,
-				capabilities,
-				...current === void 0 ? {} : { expected_revision: current.revision }
+		const currentByAddress = new Map(existing.addresses.map((binding) => [binding.address, binding]));
+		const nextManaged = /* @__PURE__ */ new Map();
+		const dynamicByAddress = new Map(dynamic.map((binding) => [binding.address, binding]));
+		const active = [];
+		for (const binding of wanted) {
+			const current = currentByAddress.get(binding.address);
+			const isDynamic = dynamicByAddress.has(binding.address);
+			if (isDynamic && current?.bound && current.adapter_id !== this.config.adapterId) continue;
+			if (current?.bound && current.adapter_id === this.config.adapterId && current.target_ref === binding.sessionId && sameCapabilities(current)) {
+				active.push(binding);
+				if (isDynamic) nextManaged.set(binding.address, {
+					...binding,
+					revision: current.revision
+				});
+				continue;
+			}
+			let written;
+			try {
+				written = await this.fabric.putBinding(binding.address, {
+					actor_adapter_id: this.config.adapterId,
+					lease_token: lease.lease_token,
+					adapter_id: this.config.adapterId,
+					target_ref: binding.sessionId,
+					capabilities,
+					...current === void 0 ? {} : { expected_revision: current.revision }
+				});
+			} catch (error) {
+				if (isDynamic && error instanceof FabricError && error.code === "adapter_mismatch") continue;
+				throw error;
+			}
+			currentByAddress.set(binding.address, written);
+			active.push(binding);
+			if (isDynamic) nextManaged.set(binding.address, {
+				...binding,
+				revision: written.revision
 			});
 		}
+		for (const [address, prior] of this.managedDynamic) {
+			if (nextManaged.has(address)) continue;
+			const current = currentByAddress.get(address);
+			if (current === void 0 || !current.bound || current.adapter_id !== this.config.adapterId || current.target_ref !== prior.sessionId || current.revision !== prior.revision) continue;
+			await this.fabric.unbind(address, {
+				actor_adapter_id: this.config.adapterId,
+				lease_token: lease.lease_token,
+				expected_revision: current.revision
+			});
+		}
+		this.effective = active;
+		this.managedDynamic = nextManaged;
 	}
 	pumpSession(sessionId) {
 		const tail = (this.tails.get(sessionId) ?? Promise.resolve()).catch(() => {}).then(() => this.pumpOnce(sessionId));
@@ -220,7 +322,7 @@ var CrewMessagingService = class {
 		});
 	}
 	async pumpOnce(sessionId) {
-		const binding = this.config.bindings.find((candidate) => candidate.sessionId === sessionId);
+		const binding = this.effective.find((candidate) => candidate.sessionId === sessionId);
 		if (binding === void 0 || this.stopped) return;
 		const lease = await this.ensureLease();
 		let agent = this.runtime.live(sessionId);
@@ -304,7 +406,7 @@ var CrewMessagingService = class {
 	async reconcile() {
 		const values = await this.fabric.deliveries();
 		for (const delivery of values.deliveries.filter((item) => item.state === "dispatching" && item.claim_owner_adapter_id === this.config.adapterId && item.native_attempt_ref === nativeAttempt(item.delivery_id))) {
-			const binding = this.config.bindings.find((item) => item.address === delivery.recipient_address);
+			const binding = this.effective.find((item) => item.address === delivery.recipient_address);
 			if (binding === void 0) continue;
 			const accepted = await this.accepted(binding.sessionId, delivery.delivery_id);
 			const lease = await this.ensureLease();
@@ -467,7 +569,7 @@ var CrewMessagingProvider = class extends Service {
 	constructor(ctx, config = {}) {
 		super(ctx, "crewMessaging");
 		this.runtime = new DshRuntime(ctx);
-		this.service = new CrewMessagingService(new FabricClient(config.url ?? "http://127.0.0.1:8787"), this.runtime, config);
+		this.service = new CrewMessagingService(new FabricClient(config.url ?? "http://127.0.0.1:8787"), this.runtime, config, this.runtime);
 		const disposeTools = installScopedTools(ctx, this.service);
 		ctx.effect(() => {
 			this.service.start().catch((error) => ctx.logger.warn(`crew messaging start: ${String(error)}`));
@@ -483,8 +585,45 @@ var DshRuntime = class {
 	ctx;
 	handles = /* @__PURE__ */ new Map();
 	resumes = /* @__PURE__ */ new Map();
+	coldTitles = /* @__PURE__ */ new Map();
 	constructor(ctx) {
 		this.ctx = ctx;
+	}
+	async discover() {
+		const values = /* @__PURE__ */ new Map();
+		for (const agent of this.ctx.agents.roots()) this.addDiscovered(values, String(agent.id), agent.session.header.origin, agent.session.events);
+		const persistence = this.ctx.get("sessionPersistence");
+		if (persistence === void 0) return [...values.values()];
+		const snapshots = await persistence.listSnapshots();
+		const nextCold = /* @__PURE__ */ new Map();
+		for (const snapshot of snapshots) {
+			const sessionId = String(snapshot.header.id);
+			if (values.has(sessionId) || snapshot.header.origin === "subagent") continue;
+			const cached = this.coldTitles.get(sessionId);
+			if (cached?.revision === snapshot.revision) nextCold.set(sessionId, cached);
+			else {
+				const inspected = await persistence.inspect(snapshot.header.id);
+				const binding = discoveredFromEvents(sessionId, inspected.meta.origin, inspected.events);
+				nextCold.set(sessionId, {
+					revision: snapshot.revision,
+					binding
+				});
+			}
+			const binding = nextCold.get(sessionId)?.binding;
+			if (binding !== void 0) values.set(sessionId, binding);
+		}
+		this.coldTitles = nextCold;
+		return [...values.values()];
+	}
+	onChanged(listener) {
+		const stopEvent = this.ctx.on("session/event", (session, event) => {
+			if (event.type === "session/title" && this.root(String(session.id)) !== void 0) listener();
+		});
+		const stopDisposed = this.ctx.on("session/disposed", () => listener());
+		return () => {
+			stopEvent();
+			stopDisposed();
+		};
 	}
 	live(sessionId) {
 		const agent = this.root(sessionId);
@@ -554,6 +693,10 @@ var DshRuntime = class {
 			}
 		};
 	}
+	addDiscovered(values, sessionId, origin, events) {
+		const binding = discoveredFromEvents(sessionId, origin, events);
+		if (binding !== void 0) values.set(sessionId, binding);
+	}
 	async resumeExact(sessionId) {
 		const id = sessionId;
 		const existing = this.root(sessionId);
@@ -594,6 +737,20 @@ var DshRuntime = class {
 		return this.ctx.agents.roots().find((agent) => agent.id === sessionId);
 	}
 };
+/** Fold only durable explicit renames; automatic names never become fabric addresses. */
+function explicitUserTitle(events) {
+	const title = foldSessionTitle(events);
+	return title?.source.kind === "user" ? title.title : void 0;
+}
+/** Convert one eligible root's durable log into a title address, if the user pinned one. */
+function discoveredFromEvents(sessionId, origin, events) {
+	if (origin === "subagent") return void 0;
+	const title = explicitUserTitle(events);
+	return title === void 0 ? void 0 : {
+		address: title,
+		sessionId
+	};
+}
 /** Fold durable inbox splices in their independent next-turn and next-step coordinate spaces. */
 function acceptedMessages(events) {
 	const messages = [];
@@ -615,4 +772,4 @@ function apply(ctx, config = {}) {
 	ctx.plugin(CrewMessagingProvider, config);
 }
 //#endregion
-export { CrewMessagingProvider, acceptedMessages, apply, apply as default };
+export { CrewMessagingProvider, acceptedMessages, apply, apply as default, explicitUserTitle };

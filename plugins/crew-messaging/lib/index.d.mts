@@ -53,8 +53,10 @@ declare class CrewMessagingProvider extends Service {
   private readonly service;
   constructor(ctx: Context, config?: CrewMessagingConfig);
 }
+/** Fold only durable explicit renames; automatic names never become fabric addresses. */
+declare function explicitUserTitle(events: readonly SessionEvent[]): string | undefined;
 /** Fold durable inbox splices in their independent next-turn and next-step coordinate spaces. */
 declare function acceptedMessages(events: readonly SessionEvent[]): NativeMessage[];
 declare function apply(ctx: Context, config?: CrewMessagingConfig): void;
 //#endregion
-export { CrewMessagingProvider, acceptedMessages, apply, apply as default };
+export { CrewMessagingProvider, acceptedMessages, apply, apply as default, explicitUserTitle };

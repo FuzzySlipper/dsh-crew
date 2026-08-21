@@ -1,4 +1,6 @@
 import { capabilities, nativeAttempt, operation, type Binding, type Claim, type Delivery, type Lease, type Message } from './protocol.ts'
+import { effectiveBindings, type AddressDiscovery, type ManagedDynamicBinding } from './addressing.ts'
+import { FabricError } from './http.ts'
 
 export interface BindingConfig { address: string; sessionId: string }
 export interface CrewMessagingConfig {
@@ -26,6 +28,7 @@ export interface Fabric {
   renew(adapterId: string, leaseToken: string, leaseDuration: string): Promise<Lease>
   listBindings(): Promise<{ addresses: Binding[] }>
   putBinding(address: string, body: Record<string, unknown>): Promise<Binding>
+  unbind(address: string, body: Record<string, unknown>): Promise<Binding>
   submit(body: Record<string, unknown>): Promise<{ message: Message; delivery: Delivery; replayed: boolean }>
   claim(body: Record<string, unknown>): Promise<Claim>
   begin(deliveryId: string, body: Record<string, unknown>): Promise<Delivery>
@@ -40,6 +43,9 @@ const defaults = { adapterId: 'dsh-crew-messaging', instanceId: 'dsh-crew-messag
 /** A leased FIFO pump that only delivers an immutable fabric envelope once DSH accepted it. */
 export class CrewMessagingService {
   private readonly config: Required<CrewMessagingConfig>
+  private readonly configuredBindings: readonly BindingConfig[]
+  private effective: readonly BindingConfig[]
+  private managedDynamic = new Map<string, ManagedDynamicBinding>()
   private readonly tails = new Map<string, Promise<void>>()
   private lease: Lease | undefined
   private leaseRenewedAt = 0
@@ -48,24 +54,30 @@ export class CrewMessagingService {
   private timer: ReturnType<typeof setTimeout> | undefined
   private readonly inFlight = new Set<Promise<void>>()
   private readonly disposeStatus: () => void
+  private disposeDiscovery: (() => void) | undefined
+  private addressingTail: Promise<void> = Promise.resolve()
 
-  constructor(private readonly fabric: Fabric, private readonly runtime: CrewRuntime, config: CrewMessagingConfig = {}) {
+  constructor(private readonly fabric: Fabric, private readonly runtime: CrewRuntime, config: CrewMessagingConfig = {}, private readonly discovery?: AddressDiscovery) {
     this.config = { ...defaults, url: config.url ?? 'http://127.0.0.1:8787', bindings: config.bindings ?? [], ...config }
     validateBindings(this.config.bindings)
-    this.disposeStatus = runtime.onStatus(agent => { if (agent.status === 'idle') this.observe(this.pumpSession(agent.sessionId)) })
+    this.configuredBindings = this.config.bindings
+    this.effective = this.configuredBindings
+    this.disposeStatus = runtime.onStatus(agent => { if (agent.status === 'idle') this.observe(this.pumpAfterAddressing(agent.sessionId)) })
   }
 
   async start(): Promise<void> {
+    this.disposeDiscovery = this.discovery?.onChanged(() => this.observe(this.enqueueAddressing()))
     try { await this.initialize() } finally { this.schedule() }
   }
   async dispose(): Promise<void> {
     this.stopped = true
     if (this.timer !== undefined) clearTimeout(this.timer)
+    this.disposeDiscovery?.()
     this.disposeStatus()
     while (this.inFlight.size > 0) await Promise.all([...this.inFlight])
   }
 
-  addresses(sessionId: string): string[] { return this.config.bindings.filter(binding => binding.sessionId === sessionId).map(binding => binding.address) }
+  addresses(sessionId: string): string[] { return this.effective.filter(binding => binding.sessionId === sessionId).map(binding => binding.address) }
   async send(sessionId: string, callId: string, recipientAddress: string, text: string, replyToMessageId?: string): Promise<{ messageId: string; replayed: boolean }> {
     const senderAddress = this.addresses(sessionId)[0]
     if (senderAddress === undefined) throw new Error('crew messaging: calling session is not bound')
@@ -79,12 +91,13 @@ export class CrewMessagingService {
     try {
       if (!this.initialized) { await this.initialize(); return }
       await this.ensureLease()
-      await Promise.all(this.config.bindings.map(binding => this.pumpSession(binding.sessionId)))
+      await this.enqueueAddressing()
+      await Promise.all(this.effective.map(binding => this.pumpSession(binding.sessionId)))
     } finally { this.schedule() }
   }
   private async initialize(): Promise<void> {
     await this.ensureLease()
-    await this.bind()
+    await this.enqueueAddressing()
     await this.reconcile()
     this.initialized = true
   }
@@ -98,13 +111,56 @@ export class CrewMessagingService {
     }
     return this.lease
   }
-  private async bind(): Promise<void> {
+  private pumpAfterAddressing(sessionId: string): Promise<void> {
+    return this.addressingTail.catch(() => {}).then(() => this.pumpSession(sessionId))
+  }
+  private enqueueAddressing(): Promise<void> {
+    const tail = this.addressingTail.catch(() => {}).then(() => this.refreshAddressing())
+    this.addressingTail = tail
+    return tail
+  }
+  private async refreshAddressing(): Promise<void> {
+    if (this.stopped) return
+    const discovered = this.discovery === undefined ? [] : await this.discovery.discover()
+    const desired = effectiveBindings(this.configuredBindings, discovered)
+    await this.bind(desired.all, desired.dynamic)
+  }
+  private async bind(wanted: readonly BindingConfig[], dynamic: readonly BindingConfig[]): Promise<void> {
     const lease = await this.ensureLease(); const existing = await this.fabric.listBindings()
-    for (const wanted of this.config.bindings) {
-      const current = existing.addresses.find(binding => binding.address === wanted.address)
-      if (current?.bound && current.adapter_id === this.config.adapterId && current.target_ref === wanted.sessionId && sameCapabilities(current)) continue
-      await this.fabric.putBinding(wanted.address, { actor_adapter_id: this.config.adapterId, lease_token: lease.lease_token, adapter_id: this.config.adapterId, target_ref: wanted.sessionId, capabilities, ...(current === undefined ? {} : { expected_revision: current.revision }) })
+    const currentByAddress = new Map(existing.addresses.map(binding => [binding.address, binding]))
+    const nextManaged = new Map<string, ManagedDynamicBinding>()
+    const dynamicByAddress = new Map(dynamic.map(binding => [binding.address, binding]))
+    const active: BindingConfig[] = []
+    for (const binding of wanted) {
+      const current = currentByAddress.get(binding.address)
+      const isDynamic = dynamicByAddress.has(binding.address)
+      if (isDynamic && current?.bound && current.adapter_id !== this.config.adapterId) continue
+      if (current?.bound && current.adapter_id === this.config.adapterId && current.target_ref === binding.sessionId && sameCapabilities(current)) {
+        active.push(binding)
+        if (isDynamic) {
+          nextManaged.set(binding.address, { ...binding, revision: current.revision })
+        }
+        continue
+      }
+      let written: Binding
+      try {
+        written = await this.fabric.putBinding(binding.address, { actor_adapter_id: this.config.adapterId, lease_token: lease.lease_token, adapter_id: this.config.adapterId, target_ref: binding.sessionId, capabilities, ...(current === undefined ? {} : { expected_revision: current.revision }) })
+      } catch (error: unknown) {
+        if (isDynamic && error instanceof FabricError && error.code === 'adapter_mismatch') continue
+        throw error
+      }
+      currentByAddress.set(binding.address, written)
+      active.push(binding)
+      if (isDynamic) nextManaged.set(binding.address, { ...binding, revision: written.revision })
     }
+    for (const [address, prior] of this.managedDynamic) {
+      if (nextManaged.has(address)) continue
+      const current = currentByAddress.get(address)
+      if (current === undefined || !current.bound || current.adapter_id !== this.config.adapterId || current.target_ref !== prior.sessionId || current.revision !== prior.revision) continue
+      await this.fabric.unbind(address, { actor_adapter_id: this.config.adapterId, lease_token: lease.lease_token, expected_revision: current.revision })
+    }
+    this.effective = active
+    this.managedDynamic = nextManaged
   }
   private pumpSession(sessionId: string): Promise<void> {
     const prior = this.tails.get(sessionId) ?? Promise.resolve()
@@ -113,7 +169,7 @@ export class CrewMessagingService {
     return tail.finally(() => { if (this.tails.get(sessionId) === tail) this.tails.delete(sessionId) })
   }
   private async pumpOnce(sessionId: string): Promise<void> {
-    const binding = this.config.bindings.find(candidate => candidate.sessionId === sessionId)
+    const binding = this.effective.find(candidate => candidate.sessionId === sessionId)
     if (binding === undefined || this.stopped) return
     const lease = await this.ensureLease()
     let agent = this.runtime.live(sessionId)
@@ -163,7 +219,7 @@ export class CrewMessagingService {
     for (const delivery of values.deliveries.filter(item => item.state === 'dispatching'
       && item.claim_owner_adapter_id === this.config.adapterId
       && item.native_attempt_ref === nativeAttempt(item.delivery_id))) {
-      const binding = this.config.bindings.find(item => item.address === delivery.recipient_address)
+      const binding = this.effective.find(item => item.address === delivery.recipient_address)
       if (binding === undefined) continue
       const accepted = await this.accepted(binding.sessionId, delivery.delivery_id)
       const lease = await this.ensureLease(); const body = { adapter_id: this.config.adapterId, lease_token: lease.lease_token, operation_id: operation(delivery.delivery_id, accepted ? 'ack' : 'unknown'), native_attempt_ref: nativeAttempt(delivery.delivery_id) }

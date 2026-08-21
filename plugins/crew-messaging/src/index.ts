@@ -4,12 +4,14 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
+import { foldSessionTitle } from '@deepseek-ai/dsh-session-title'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import { FabricClient } from './http.ts'
 import { CrewMessagingService, type CrewMessagingConfig, type NativeMessage, type RuntimeAgent } from './service.ts'
+import type { AddressDiscovery, DiscoveredBinding } from './addressing.ts'
 import { installScopedTools } from './tools.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
@@ -27,7 +29,7 @@ export class CrewMessagingProvider extends Service {
   constructor(ctx: Context, config: CrewMessagingConfig = {}) {
     super(ctx, 'crewMessaging')
     this.runtime = new DshRuntime(ctx)
-    this.service = new CrewMessagingService(new FabricClient(config.url ?? 'http://127.0.0.1:8787'), this.runtime, config)
+    this.service = new CrewMessagingService(new FabricClient(config.url ?? 'http://127.0.0.1:8787'), this.runtime, config, this.runtime)
     const disposeTools = installScopedTools(ctx, this.service)
     ctx.effect(() => {
       void this.service.start().catch(error => ctx.logger.warn(`crew messaging start: ${String(error)}`))
@@ -36,10 +38,43 @@ export class CrewMessagingProvider extends Service {
   }
 }
 
-class DshRuntime {
+class DshRuntime implements AddressDiscovery {
   private readonly handles = new Map<string, AgentHandle>()
   private readonly resumes = new Map<string, Promise<Agent | undefined>>()
+  private coldTitles = new Map<string, { readonly revision: unknown; readonly binding: DiscoveredBinding | undefined }>()
   constructor(private readonly ctx: Context) {}
+
+  async discover(): Promise<readonly DiscoveredBinding[]> {
+    const values = new Map<string, DiscoveredBinding>()
+    for (const agent of this.ctx.agents.roots()) this.addDiscovered(values, String(agent.id), agent.session.header.origin, agent.session.events)
+    const persistence = this.ctx.get('sessionPersistence')
+    if (persistence === undefined) return [...values.values()]
+    const snapshots = await persistence.listSnapshots()
+    const nextCold = new Map<string, { readonly revision: unknown; readonly binding: DiscoveredBinding | undefined }>()
+    for (const snapshot of snapshots) {
+      const sessionId = String(snapshot.header.id)
+      if (values.has(sessionId) || snapshot.header.origin === 'subagent') continue
+      const cached = this.coldTitles.get(sessionId)
+      if (cached?.revision === snapshot.revision) {
+        nextCold.set(sessionId, cached)
+      } else {
+        const inspected = await persistence.inspect(snapshot.header.id)
+        const binding = discoveredFromEvents(sessionId, inspected.meta.origin, inspected.events)
+        nextCold.set(sessionId, { revision: snapshot.revision, binding })
+      }
+      const binding = nextCold.get(sessionId)?.binding
+      if (binding !== undefined) values.set(sessionId, binding)
+    }
+    this.coldTitles = nextCold
+    return [...values.values()]
+  }
+  onChanged(listener: () => void): () => void {
+    const stopEvent = this.ctx.on('session/event', (session, event) => {
+      if ((event as { type: string }).type === 'session/title' && this.root(String(session.id)) !== undefined) listener()
+    })
+    const stopDisposed = this.ctx.on('session/disposed', () => listener())
+    return () => { stopEvent(); stopDisposed() }
+  }
 
   live(sessionId: string): RuntimeAgent | undefined { const agent = this.root(sessionId); return agent === undefined ? undefined : this.wrap(agent) }
   async resume(sessionId: string): Promise<RuntimeAgent | undefined> {
@@ -67,6 +102,10 @@ class DshRuntime {
   async dispose(): Promise<void> { await Promise.all([...this.handles.values()].map(handle => handle.dispose())); this.handles.clear() }
 
   private wrap(agent: Agent): DshAgent { return { agent, sessionId: String(agent.id), get status() { return agent.status }, followup: message => { agent.followup(message as never) } } }
+  private addDiscovered(values: Map<string, DiscoveredBinding>, sessionId: string, origin: 'subagent' | undefined, events: readonly SessionEvent[]): void {
+    const binding = discoveredFromEvents(sessionId, origin, events)
+    if (binding !== undefined) values.set(sessionId, binding)
+  }
   private async resumeExact(sessionId: string): Promise<Agent | undefined> {
     const id = sessionId as SessionId
     const existing = this.root(sessionId); if (existing !== undefined) return existing
@@ -97,6 +136,19 @@ class DshRuntime {
 }
 
 interface DshAgent extends RuntimeAgent { readonly agent: Agent }
+
+/** Fold only durable explicit renames; automatic names never become fabric addresses. */
+export function explicitUserTitle(events: readonly SessionEvent[]): string | undefined {
+  const title = foldSessionTitle(events)
+  return title?.source.kind === 'user' ? title.title : undefined
+}
+
+/** Convert one eligible root's durable log into a title address, if the user pinned one. */
+function discoveredFromEvents(sessionId: string, origin: 'subagent' | undefined, events: readonly SessionEvent[]): DiscoveredBinding | undefined {
+  if (origin === 'subagent') return undefined
+  const title = explicitUserTitle(events)
+  return title === undefined ? undefined : { address: title, sessionId }
+}
 
 /** Fold durable inbox splices in their independent next-turn and next-step coordinate spaces. */
 export function acceptedMessages(events: readonly SessionEvent[]): NativeMessage[] {
