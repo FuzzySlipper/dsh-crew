@@ -1,0 +1,21 @@
+{
+  "project": "dsh-crew-live",
+  "serve": {
+    "command": "false",
+    "preferredPort": 3080,
+    "healthUrl": "/",
+    "readyText": "<div id=\"root\"></div>",
+    "reusePolicy": "explicit",
+    "startupTimeout": "10s"
+  },
+  "tests": {
+    "command": "true",
+    "artifactPolicy": "live-ui"
+  },
+  "playtest": {
+    "startPath": "/",
+    "viewport": { "width": 1440, "height": 900 },
+    "headed": false,
+    "recordVideo": false
+  }
+}

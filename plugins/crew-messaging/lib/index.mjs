@@ -535,7 +535,7 @@ function frameCrewDelivery(message) {
 		kind: "reply",
 		reply_to_message_id: message.reply_to_message_id
 	};
-	const instruction = `Reply using crew_message(recipient=${JSON.stringify(message.sender_address)}, reply_to_message_id=${JSON.stringify(message.message_id)}, text="...").`;
+	const instruction = message.reply_to_message_id === void 0 ? `If a response is warranted, send a linked reply using crew_message(recipient=${JSON.stringify(message.sender_address)}, reply_to_message_id=${JSON.stringify(message.message_id)}, text="...").` : `This is a reply acknowledging prior message ${JSON.stringify(message.reply_to_message_id)}. Do not reply merely because this message is a reply. Only if its body independently requires further work, send a new ordinary crew_message without reply_to_message_id.`;
 	return `${JSON.stringify(header)}\n${instruction}\n<crew-message-body encoding="json">\n${JSON.stringify(message.body)}\n</crew-message-body>`;
 }
 //#endregion
@@ -631,7 +631,7 @@ function installScopedTools(ctx, service) {
 			disposers.push(agent.ctx.systemPrompt.section({
 				name: "crew-messaging:policy",
 				order: 65,
-				text: () => "Use crew_message to send a durable text message to a configured fabric address. A delivered crew message includes the exact recipient and reply_to_message_id to use for a linked reply."
+				text: () => "Use crew_message to send a durable text message to a configured fabric address. An ordinary delivered crew message explains how to send a linked reply when one is warranted. A delivered reply acknowledges prior work and must not be answered merely because it is a reply."
 			}));
 			disposers.push(agent.ctx.tools.register(defineTool({
 				name: "crew_addresses",

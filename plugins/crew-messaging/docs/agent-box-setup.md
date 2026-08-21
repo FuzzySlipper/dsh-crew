@@ -1,8 +1,8 @@
 # DSH Crew messaging agent-box setup
 
-This adapter is for one trusted local box. It maps explicitly named DSH root-session IDs to fabric addresses; it does not discover roots, expose every session, or provide a remote transport.
+This adapter is for one trusted local box. Explicit bindings map a root-session ID to an address and take precedence over title discovery. Otherwise, a user-renamed root session becomes its title address (for example, `Beta`); automatic titles and durable subagents are excluded. The adapter does not expose arbitrary DSH session IDs or provide a remote transport.
 
-Start the sibling fabric first, following [the crew-services agent-box runbook](../../../../crew-services/docs/agent-box-runbook.md). The profile configuration selects the roots allowed to speak for their addresses:
+Start the sibling fabric first, following [the crew-services agent-box runbook](../../../../crew-services/docs/agent-box-runbook.md). Use bindings when an operator needs an explicit override; use `[]` to enable only user-title discovery:
 
 ```sh
 export DSH_CREW_MESSAGING_URL=http://127.0.0.1:8787
@@ -12,14 +12,22 @@ export DSH_CREW_MESSAGING_BINDINGS='[{"address":"alpha","sessionId":"<root-sessi
 
 ```
 
+Changing this variable or the installed client bundle requires a `dsh-web.service` restart. The read-only directory, traffic, and runtime view is available at **Settings → Crew** after the restart. Historical fabric rows, including intentionally retained `outcome_unknown` records, are ledger history rather than currently pending deliveries.
+
 Build the local bundle and install it into the existing web profile. The plugin command applies the bundle patch; do not apply `cordis.patch.yml` manually.
 
 ```sh
 cd /home/dev/dsh-crew
 pnpm --dir research/deepseek-harness exec tsdown --config ../../plugins/crew-messaging/tsdown.config.ts --tsconfig ../../plugins/crew-messaging/tsconfig.json
 cd /home/dev/dsh-crew/research/deepseek-harness
-DSH_HOME=/home/agent/.dsh pnpm dsh plugin --profile web add /home/dev/dsh-crew/plugins/crew-messaging
+DSH_HOME=/home/agent/.dsh pnpm dsh plugin --profile web add file:/home/dev/dsh-crew/plugins/crew-messaging
 ```
+
+Keep the explicit `file:` prefix for a live profile. It installs the built
+package into the profile's module tree, where current DSH supplies the
+package's declared peers through its managed fallback. A `link:` install
+resolves ESM imports from the source checkout instead and can bypass that
+fallback.
 
 Exports in an interactive shell do not reach the already-running `dsh-web.service`. Create the user-owned EnvironmentFile and drop-in directories first:
 
@@ -62,7 +70,7 @@ systemctl --user status dsh-web.service
 
 Use a stable `DSH_CREW_MESSAGING_INSTANCE_ID` for one running DSH profile. A restart registers/renews that adapter identity, rebuilds the explicit bindings, and reconciles the adapter-owned `dispatching` records. A proven native inbox entry is acknowledged; an unprovable one becomes `outcome_unknown` and is never resent automatically.
 
-The profile’s existing DSH session persistence is required for cold-root recovery. The adapter resumes only the exact configured root and refuses a persisted `origin: 'subagent'` session. Busy roots receive `followup()` next-turn work; this adapter does not steer, cancel, or inject into the active turn.
+The profile’s existing DSH session persistence is required for cold-root recovery. The adapter resumes only the exact configured root and refuses a persisted `origin: 'subagent'` session. Busy roots receive `followup()` next-turn work; this adapter does not steer, cancel, or inject into the active turn. Ordinary delivered frames show how to make a linked reply when one is warranted; reply frames are terminal by default and must not create an acknowledgement loop.
 
 For a current-source check and the real local binary probe:
 
