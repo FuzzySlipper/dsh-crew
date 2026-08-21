@@ -18,7 +18,7 @@ export function installScopedTools(ctx: Context, service: CrewMessagingService):
     if (installed.has(agent) || !ctx.agents.roots().includes(agent) || service.addresses(String(agent.id)).length === 0) return
     const disposers: Array<() => unknown> = []
     try {
-      disposers.push(agent.ctx.systemPrompt.section({ name: 'crew-messaging:policy', order: 65, text: () => 'Use crew_message to send a durable text message to a configured fabric address. Replies must preserve the supplied message id.' }))
+      disposers.push(agent.ctx.systemPrompt.section({ name: 'crew-messaging:policy', order: 65, text: () => 'Use crew_message to send a durable text message to a configured fabric address. A delivered crew message includes the exact recipient and reply_to_message_id to use for a linked reply.' }))
       disposers.push(agent.ctx.tools.register(defineTool({
         name: 'crew_addresses', description: 'List the fabric addresses bound to this exact session.', parameters: {}, output: { schema: addressOutput, render: (_args, value) => output(value) },
         async execute(_args, exec) { return { addresses: service.addresses(String(caller(exec.agent, 'crew_addresses').id)) } },

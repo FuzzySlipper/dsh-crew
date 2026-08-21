@@ -450,6 +450,31 @@ function validateBindings(bindings) {
 	}
 }
 //#endregion
+//#region src/framing.ts
+/**
+* Render one fabric envelope as model-visible text without exposing adapter
+* targets or DSH session ids. The body is a standalone JSON string, so its
+* contents cannot become a second metadata record or delimiter.
+*/
+function frameCrewDelivery(message) {
+	const header = message.reply_to_message_id === void 0 ? {
+		type: "crew_delivery",
+		message_id: message.message_id,
+		from: message.sender_address,
+		to: message.recipient_address,
+		kind: "ordinary"
+	} : {
+		type: "crew_delivery",
+		message_id: message.message_id,
+		from: message.sender_address,
+		to: message.recipient_address,
+		kind: "reply",
+		reply_to_message_id: message.reply_to_message_id
+	};
+	const instruction = `Reply using crew_message(recipient=${JSON.stringify(message.sender_address)}, reply_to_message_id=${JSON.stringify(message.message_id)}, text="...").`;
+	return `${JSON.stringify(header)}\n${instruction}\n<crew-message-body encoding="json">\n${JSON.stringify(message.body)}\n</crew-message-body>`;
+}
+//#endregion
 //#region src/tools.ts
 const addressOutput = {
 	type: "object",
@@ -494,7 +519,7 @@ function installScopedTools(ctx, service) {
 			disposers.push(agent.ctx.systemPrompt.section({
 				name: "crew-messaging:policy",
 				order: 65,
-				text: () => "Use crew_message to send a durable text message to a configured fabric address. Replies must preserve the supplied message id."
+				text: () => "Use crew_message to send a durable text message to a configured fabric address. A delivered crew message includes the exact recipient and reply_to_message_id to use for a linked reply."
 			}));
 			disposers.push(agent.ctx.tools.register(defineTool({
 				name: "crew_addresses",
@@ -660,7 +685,7 @@ var DshRuntime = class {
 		return createUserMessage({
 			content: [{
 				type: "text",
-				text: envelope.body
+				text: frameCrewDelivery(envelope)
 			}],
 			source: {
 				kind: "crew-messaging",

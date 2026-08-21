@@ -12,6 +12,7 @@ import type {} from '@deepseek-ai/dsh-agent-presets'
 import { FabricClient } from './http.ts'
 import { CrewMessagingService, type CrewMessagingConfig, type NativeMessage, type RuntimeAgent } from './service.ts'
 import type { AddressDiscovery, DiscoveredBinding } from './addressing.ts'
+import { frameCrewDelivery } from './framing.ts'
 import { installScopedTools } from './tools.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
@@ -96,7 +97,7 @@ class DshRuntime implements AddressDiscovery {
   }
   async flush(agent: RuntimeAgent): Promise<boolean> { return await this.ctx.sessions.flush((agent as DshAgent).agent.session) }
   message(delivery: { delivery_id: string }, envelope: { message_id: string; sender_address: string; recipient_address: string; body: string }): NativeMessage {
-    return createUserMessage({ content: [{ type: 'text', text: envelope.body }], source: { kind: 'crew-messaging', messageId: envelope.message_id, deliveryId: delivery.delivery_id, senderAddress: envelope.sender_address, recipientAddress: envelope.recipient_address, form: 'relay' } }) as unknown as NativeMessage
+    return createUserMessage({ content: [{ type: 'text', text: frameCrewDelivery(envelope) }], source: { kind: 'crew-messaging', messageId: envelope.message_id, deliveryId: delivery.delivery_id, senderAddress: envelope.sender_address, recipientAddress: envelope.recipient_address, form: 'relay' } }) as unknown as NativeMessage
   }
   onStatus(listener: (agent: RuntimeAgent) => void): () => void { return this.ctx.on('agent/status', ({ agent }) => { listener(this.wrap(agent)) }) }
   async dispose(): Promise<void> { await Promise.all([...this.handles.values()].map(handle => handle.dispose())); this.handles.clear() }
