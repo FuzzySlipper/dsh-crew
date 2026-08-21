@@ -4,6 +4,7 @@ export interface BindingConfig { address: string; sessionId: string }
 export interface CrewMessagingConfig {
   url?: string; adapterId?: string; instanceId?: string; bindings?: BindingConfig[]
   leaseDuration?: string; renewMs?: number; pollMs?: number; claimDuration?: string; ttl?: string
+  acceptanceTimeoutMs?: number; acceptancePollMs?: number
 }
 
 export interface RuntimeAgent { readonly sessionId: string; readonly status: 'idle' | 'running'; followup(message: NativeMessage): void }
@@ -34,7 +35,7 @@ export interface Fabric {
   deliveries(): Promise<{ deliveries: Delivery[] }>
 }
 
-const defaults = { adapterId: 'dsh-crew-messaging', instanceId: 'dsh-crew-messaging-local', leaseDuration: '2m', renewMs: 45_000, pollMs: 1_000, claimDuration: '45s', ttl: '24h' }
+const defaults = { adapterId: 'dsh-crew-messaging', instanceId: 'dsh-crew-messaging-local', leaseDuration: '2m', renewMs: 45_000, pollMs: 1_000, claimDuration: '45s', ttl: '24h', acceptanceTimeoutMs: 1_000, acceptancePollMs: 10 }
 
 /** A leased FIFO pump that only delivers an immutable fabric envelope once DSH accepted it. */
 export class CrewMessagingService {
@@ -139,7 +140,7 @@ export class CrewMessagingService {
     await this.fabric.begin(delivery.delivery_id, { adapter_id: this.config.adapterId, lease_token: lease.lease_token, operation_id: operation(delivery.delivery_id, 'begin'), claim_token: claimed.claim_token, native_attempt_ref: attempt })
     try {
       agent.followup(this.runtime.message(delivery, envelope))
-      if (!await this.runtime.flush(agent) || !await this.accepted(sessionId, delivery.delivery_id)) throw new Error('native acceptance was not durable')
+      if (!await this.runtime.flush(agent) || !await this.accepted(sessionId, delivery.delivery_id, this.config.acceptanceTimeoutMs)) throw new Error('native acceptance was not durable')
       await this.fabric.acknowledge(delivery.delivery_id, { adapter_id: this.config.adapterId, lease_token: lease.lease_token, operation_id: operation(delivery.delivery_id, 'ack'), native_attempt_ref: attempt })
     } catch {
       await this.fabric.unknown(delivery.delivery_id, { adapter_id: this.config.adapterId, lease_token: lease.lease_token, operation_id: operation(delivery.delivery_id, 'unknown'), native_attempt_ref: attempt })
@@ -148,7 +149,15 @@ export class CrewMessagingService {
   private release(deliveryId: string, claimToken: string, leaseToken: string): Promise<Delivery> {
     return this.fabric.release(deliveryId, { adapter_id: this.config.adapterId, lease_token: leaseToken, operation_id: operation(deliveryId, 'release'), claim_token: claimToken })
   }
-  private async accepted(sessionId: string, deliveryId: string): Promise<boolean> { return (await this.runtime.inspect(sessionId))?.some(message => message.source.kind === 'crew-messaging' && message.source.deliveryId === deliveryId) ?? false }
+  private async accepted(sessionId: string, deliveryId: string, waitMs = 0): Promise<boolean> {
+    const deadline = Date.now() + waitMs
+    while (true) {
+      if ((await this.runtime.inspect(sessionId))?.some(message => message.source.kind === 'crew-messaging' && message.source.deliveryId === deliveryId) ?? false) return true
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) return false
+      await new Promise(resolve => setTimeout(resolve, Math.min(this.config.acceptancePollMs, remaining)))
+    }
+  }
   private async reconcile(): Promise<void> {
     const values = await this.fabric.deliveries()
     for (const delivery of values.deliveries.filter(item => item.state === 'dispatching'

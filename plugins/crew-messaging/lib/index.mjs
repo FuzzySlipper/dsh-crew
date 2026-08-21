@@ -95,7 +95,9 @@ const defaults = {
 	renewMs: 45e3,
 	pollMs: 1e3,
 	claimDuration: "45s",
-	ttl: "24h"
+	ttl: "24h",
+	acceptanceTimeoutMs: 1e3,
+	acceptancePollMs: 10
 };
 /** A leased FIFO pump that only delivers an immutable fabric envelope once DSH accepted it. */
 var CrewMessagingService = class {
@@ -266,7 +268,7 @@ var CrewMessagingService = class {
 		});
 		try {
 			agent.followup(this.runtime.message(delivery, envelope));
-			if (!await this.runtime.flush(agent) || !await this.accepted(sessionId, delivery.delivery_id)) throw new Error("native acceptance was not durable");
+			if (!await this.runtime.flush(agent) || !await this.accepted(sessionId, delivery.delivery_id, this.config.acceptanceTimeoutMs)) throw new Error("native acceptance was not durable");
 			await this.fabric.acknowledge(delivery.delivery_id, {
 				adapter_id: this.config.adapterId,
 				lease_token: lease.lease_token,
@@ -290,8 +292,14 @@ var CrewMessagingService = class {
 			claim_token: claimToken
 		});
 	}
-	async accepted(sessionId, deliveryId) {
-		return (await this.runtime.inspect(sessionId))?.some((message) => message.source.kind === "crew-messaging" && message.source.deliveryId === deliveryId) ?? false;
+	async accepted(sessionId, deliveryId, waitMs = 0) {
+		const deadline = Date.now() + waitMs;
+		while (true) {
+			if ((await this.runtime.inspect(sessionId))?.some((message) => message.source.kind === "crew-messaging" && message.source.deliveryId === deliveryId) ?? false) return true;
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) return false;
+			await new Promise((resolve) => setTimeout(resolve, Math.min(this.config.acceptancePollMs, remaining)));
+		}
 	}
 	async reconcile() {
 		const values = await this.fabric.deliveries();

@@ -75,6 +75,15 @@ describe('CrewMessagingService', () => {
     fabric.queue.push({ claimed: true, replayed: false, delivery: delivery('d1'), message: envelope('m-d1'), claim_token: 'claim' }); await adapter.start(); await (adapter as any).pumpSession('s2')
     expect(runtime.accepted.get('s2')?.[0]?.source.deliveryId).toBe('d1'); expect(fabric.acked).toEqual(['d1']); await adapter.dispose()
   })
+  it('waits through the inbox-removal to user-message acceptance gap before acknowledging', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime(); runtime.agents.set('s2', runtime.agent('s2', 'idle'))
+    const inspect = runtime.inspect.bind(runtime); let reads = 0
+    runtime.inspect = async id => { reads += 1; return reads < 3 ? [] : await inspect(id) }
+    fabric.queue.push({ claimed: true, replayed: false, delivery: delivery('admission-gap'), message: envelope('m-admission-gap'), claim_token: 'claim' })
+    const adapter = new CrewMessagingService(fabric, runtime, { bindings: [{ address: 'alpha', sessionId: 's1' }, { address: 'beta', sessionId: 's2' }], pollMs: 60_000, acceptanceTimeoutMs: 100, acceptancePollMs: 1 })
+    await adapter.start(); await (adapter as any).pumpSession('s2')
+    expect(reads).toBe(3); expect(fabric.acked).toContain('admission-gap'); expect(fabric.unknowns).not.toContain('admission-gap'); await adapter.dispose()
+  })
   it('reports outcome_unknown rather than acknowledging when the native flush is false', async () => {
     const [adapter, fabric, runtime] = service(); runtime.agents.set('s2', runtime.agent('s2', 'idle')); runtime.flushResult = false
     fabric.queue.push({ claimed: true, replayed: false, delivery: delivery('unflushed'), message: envelope('m-unflushed'), claim_token: 'claim' })

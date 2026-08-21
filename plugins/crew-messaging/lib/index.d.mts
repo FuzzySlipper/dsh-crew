@@ -16,6 +16,8 @@ interface CrewMessagingConfig {
   pollMs?: number;
   claimDuration?: string;
   ttl?: string;
+  acceptanceTimeoutMs?: number;
+  acceptancePollMs?: number;
 }
 interface NativeMessage {
   readonly id: string;
