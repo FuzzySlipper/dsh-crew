@@ -51,6 +51,15 @@ N-API wake entry point deliberately does not own that callback
 | Reply link | Frame the fabric message with aliases and `message_id`. Install a fabric-facing `crew_message` tool whose optional `reply_to_message_id` calls `crew-services`. A reply frame is terminal by default. | Crew's native `replyAgentMessage` remains useful for messages whose sender is another Crew session, but it cannot represent a DSH/fabric sender session. Cross-runtime reply authority stays in the fabric. |
 | Restart | Re-register the adapter and bindings, then reconcile fabric `dispatching` rows against Crew's durable delivery/message readback. Do not use process-local wake sets as proof. | Crew rehydrates session/event state at bootstrap; wake in-flight/deferred sets are explicitly process-local ([bootstrap](../../rusty-crew/crates/core/core-engine/src/bootstrap.rs), [activity census](../../rusty-crew/docs/runtime-activity-census.md)). |
 
+## Implemented direct-brain slice
+
+The Rusty Crew direct-brain adapter is now implemented as an optional service
+composition: leased alias bindings, exact direct-brain validation, durable
+fabric pump/reconciliation, and bound-only `crew_directory` / `crew_message`
+tools. Its local real-boundary smoke and agent-box configuration are documented
+in the [Rusty Crew adapter runbook](../../rusty-crew/docs/crew-services-adapter-runbook.md).
+The managed-Codex extension remains a second slice.
+
 ## First implementation slice
 
 1. Add one Rusty Crew service-owned adapter with a stable adapter instance and
