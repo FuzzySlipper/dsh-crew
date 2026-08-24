@@ -15,8 +15,12 @@ import type { AddressDiscovery, DiscoveredBinding } from './addressing.ts'
 import { frameCrewDelivery } from './framing.ts'
 import { installScopedTools } from './tools.ts'
 import { CREW_DASHBOARD_PATH, crewDashboardHandler, dashboardTuning } from './dashboard/host.ts'
+import {
+  CREW_SESSION_EVENTS_PATH, CREW_SESSION_EVENTS_STREAM_PATH, CREW_SESSIONS_PATH,
+  crewForeignSessionEventsHandler, crewForeignSessionEventsStreamHandler, crewForeignSessionsHandler,
+} from './dashboard/foreign-sessions.ts'
 
-interface WebRouteHost { register(route: { kind: 'exact'; path: string; handler: ReturnType<typeof crewDashboardHandler> }): () => void }
+interface WebRouteHost { register(route: { kind: 'exact'; path: string; handler: (request: import('node:http').IncomingMessage, response: import('node:http').ServerResponse) => void | Promise<void> }): () => void }
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -45,9 +49,16 @@ export class CrewMessagingProvider extends Service {
       tuning: dashboardTuning(config),
       fabricUrl: config.url ?? 'http://127.0.0.1:8787',
     })
+    const fabricUrl = config.url ?? 'http://127.0.0.1:8787'
+    const sessions = crewForeignSessionsHandler({ fabricUrl })
+    const events = crewForeignSessionEventsHandler({ fabricUrl })
+    const stream = crewForeignSessionEventsStreamHandler({ fabricUrl })
     ctx.inject(['webServer'], webCtx => {
       const webServer = webCtx.get('webServer') as WebRouteHost
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_DASHBOARD_PATH, handler: dashboard }), 'crew-messaging: dashboard route')
+      webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_SESSIONS_PATH, handler: sessions }), 'crew-messaging: foreign sessions route')
+      webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_SESSION_EVENTS_PATH, handler: events }), 'crew-messaging: foreign session events route')
+      webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_SESSION_EVENTS_STREAM_PATH, handler: stream }), 'crew-messaging: foreign session event stream route')
     })
     const disposeTools = installScopedTools(ctx, this.service)
     ctx.effect(() => {

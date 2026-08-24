@@ -3,6 +3,7 @@ import { foldSessionTitle } from "@deepseek-ai/dsh-session-title";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { resolveSessionPreset } from "@deepseek-ai/dsh-agent-presets";
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import { Readable } from "node:stream";
 //#region src/http.ts
 var FabricError = class extends Error {
 	code;
@@ -789,7 +790,7 @@ async function readJson(request, url) {
 function projectReadiness(value) {
 	return {
 		ready: true,
-		status: text(object(value)?.status) ?? "ok"
+		status: text$1(object$1(value)?.status) ?? "ok"
 	};
 }
 function projectDirectory(value) {
@@ -800,47 +801,47 @@ function projectDirectory(value) {
 	};
 }
 function projectMessages(value) {
-	return array(object(value)?.messages).slice(-20).reverse().flatMap((entry) => {
-		const id = text(entry.message_id);
-		const from = text(entry.sender_address);
-		const to = text(entry.recipient_address);
-		const createdAt = text(entry.created_at);
+	return array(object$1(value)?.messages).slice(-20).reverse().flatMap((entry) => {
+		const id = text$1(entry.message_id);
+		const from = text$1(entry.sender_address);
+		const to = text$1(entry.recipient_address);
+		const createdAt = text$1(entry.created_at);
 		if (id === void 0 || from === void 0 || to === void 0 || createdAt === void 0) return [];
 		return [{
 			id,
 			from,
 			to,
 			createdAt,
-			preview: preview(text(entry.body) ?? ""),
-			...optional("replyTo", text(entry.reply_to_message_id))
+			preview: preview(text$1(entry.body) ?? ""),
+			...optional("replyTo", text$1(entry.reply_to_message_id))
 		}];
 	});
 }
 function projectDeliveries(value) {
-	return array(object(value)?.deliveries).slice(-20).reverse().flatMap((entry) => {
-		const id = text(entry.delivery_id);
-		const messageId = text(entry.message_id);
-		const recipient = text(entry.recipient_address);
-		const state = text(entry.state);
+	return array(object$1(value)?.deliveries).slice(-20).reverse().flatMap((entry) => {
+		const id = text$1(entry.delivery_id);
+		const messageId = text$1(entry.message_id);
+		const recipient = text$1(entry.recipient_address);
+		const state = text$1(entry.state);
 		if (id === void 0 || messageId === void 0 || recipient === void 0 || state === void 0) return [];
-		const updatedAt = text(entry.terminal_at) ?? text(entry.dispatching_at) ?? text(entry.claimed_at) ?? text(entry.created_at);
+		const updatedAt = text$1(entry.terminal_at) ?? text$1(entry.dispatching_at) ?? text$1(entry.claimed_at) ?? text$1(entry.created_at);
 		return [{
 			id,
 			messageId,
 			recipient,
 			state,
-			...optional("action", text(entry.dispatch_action)),
+			...optional("action", text$1(entry.dispatch_action)),
 			...optional("updatedAt", updatedAt)
 		}];
 	});
 }
-function object(value) {
+function object$1(value) {
 	return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
 }
 function array(value) {
-	return Array.isArray(value) ? value.filter((entry) => object(entry) !== void 0) : [];
+	return Array.isArray(value) ? value.filter((entry) => object$1(entry) !== void 0) : [];
 }
-function text(value) {
+function text$1(value) {
 	return typeof value === "string" ? value : void 0;
 }
 function optional(key, value) {
@@ -848,6 +849,264 @@ function optional(key, value) {
 }
 function preview(value) {
 	return value.length <= 160 ? value : `${value.slice(0, 157)}...`;
+}
+//#endregion
+//#region src/dashboard/foreign-sessions.ts
+/** Same-origin read-only projections and stream proxy for foreign Crew sessions. */
+/** Same-origin browser endpoints; the browser never reaches the loopback fabric directly. */
+const CREW_SESSIONS_PATH = "/plugins/dsh-crew-messaging/sessions";
+const CREW_SESSION_EVENTS_PATH = "/plugins/dsh-crew-messaging/session-events";
+const CREW_SESSION_EVENTS_STREAM_PATH = "/plugins/dsh-crew-messaging/session-events/stream";
+/** Build explicit browser fields from the service's public session response. */
+async function crewForeignSessionsSnapshot(input) {
+	const value = object(await (await requestJson(input, "/v1/sessions", { limit: boundedLimit(input.limit, 100) })).json());
+	const sessions = Array.isArray(value?.sessions) ? value.sessions.map(projectSession) : void 0;
+	if (sessions === void 0 || sessions.some((session) => session === void 0)) throw new Error("invalid session response");
+	return { sessions };
+}
+/** Build an explicit bounded timeline response for one public foreign session identity. */
+async function crewForeignSessionEventsSnapshot(input) {
+	if (input.sessionId.trim() === "") throw new Error("session_id is required");
+	const value = object(await (await requestJson(input, "/v1/session-events", {
+		session_id: input.sessionId,
+		cursor: boundedCursor(input.cursor),
+		limit: boundedLimit(input.limit, 200)
+	})).json());
+	const events = Array.isArray(value?.events) ? value.events.map(projectEvent) : void 0;
+	if (events === void 0 || events.some((event) => event === void 0)) throw new Error("invalid session event response");
+	return { events };
+}
+/** Own the same-origin JSON response lifecycle for a bounded foreign session list. */
+function crewForeignSessionsHandler(input) {
+	return async (request, response) => {
+		if (request.method !== "GET") return methodNotAllowed(response);
+		try {
+			const limit = requestLimit(request, 100);
+			respondJson(response, 200, await crewForeignSessionsSnapshot({
+				fabricUrl: input.fabricUrl,
+				limit,
+				...input.request === void 0 ? {} : { request: input.request }
+			}));
+		} catch (error) {
+			respondJson(response, 503, { error: error instanceof Error ? error.message : "Crew session service is unavailable" });
+		}
+	};
+}
+/** Own the same-origin JSON response lifecycle for one bounded foreign event history. */
+function crewForeignSessionEventsHandler(input) {
+	return async (request, response) => {
+		if (request.method !== "GET") return methodNotAllowed(response);
+		let sessionId;
+		let cursor;
+		let limit;
+		try {
+			sessionId = requiredQuery(request, "session_id");
+			cursor = requestCursor(request);
+			limit = requestLimit(request, 200);
+		} catch (error) {
+			respondJson(response, 400, { error: error instanceof Error ? error.message : "invalid request" });
+			return;
+		}
+		try {
+			respondJson(response, 200, await crewForeignSessionEventsSnapshot({
+				fabricUrl: input.fabricUrl,
+				sessionId,
+				cursor,
+				limit,
+				...input.request === void 0 ? {} : { request: input.request }
+			}));
+		} catch (error) {
+			respondJson(response, 503, { error: error instanceof Error ? error.message : "Crew session service is unavailable" });
+		}
+	};
+}
+/**
+* Proxy the fabric SSE body without buffering it, so EventSource reconnects stay same-origin.
+*
+* @returns An async handler that aborts the upstream request when the browser disconnects.
+*/
+function crewForeignSessionEventsStreamHandler(input) {
+	return async (request, response) => {
+		if (request.method !== "GET") return methodNotAllowed(response);
+		let sessionId;
+		let cursor;
+		let limit;
+		try {
+			sessionId = requiredQuery(request, "session_id");
+			cursor = requestCursor(request);
+			limit = requestLimit(request, 200);
+		} catch (error) {
+			respondJson(response, 400, { error: error instanceof Error ? error.message : "invalid request" });
+			return;
+		}
+		const controller = new AbortController();
+		const abort = () => {
+			controller.abort();
+		};
+		response.once("close", abort);
+		try {
+			const upstream = await (input.request ?? fetch)(upstreamUrl(input.fabricUrl, "/v1/session-events/stream", {
+				session_id: sessionId,
+				cursor,
+				limit
+			}), {
+				headers: {
+					accept: "text/event-stream",
+					...request.headers["last-event-id"] === void 0 ? {} : { "last-event-id": String(request.headers["last-event-id"]) }
+				},
+				signal: controller.signal
+			});
+			if (!upstream.ok || upstream.body === null) {
+				response.writeHead(upstream.status || 503, {
+					"content-type": upstream.headers.get("content-type") ?? "application/json; charset=utf-8",
+					"cache-control": "no-store"
+				});
+				response.end(upstream.body === null ? "" : await upstream.text());
+				return;
+			}
+			response.writeHead(upstream.status, {
+				"content-type": upstream.headers.get("content-type") ?? "text/event-stream",
+				"cache-control": upstream.headers.get("cache-control") ?? "no-cache",
+				connection: "keep-alive"
+			});
+			const body = Readable.fromWeb(upstream.body);
+			body.on("error", () => {
+				if (!response.destroyed) response.destroy();
+			});
+			body.pipe(response);
+			await new Promise((resolve) => response.once("close", resolve));
+		} catch {
+			if (!response.headersSent) respondJson(response, 503, { error: "Crew session stream is unavailable" });
+			else if (!response.destroyed) response.destroy();
+		} finally {
+			response.off("close", abort);
+			controller.abort();
+		}
+	};
+}
+async function requestJson(input, path, query) {
+	const response = await (input.request ?? fetch)(upstreamUrl(input.fabricUrl, path, query), {
+		headers: { accept: "application/json" },
+		signal: AbortSignal.timeout(1500)
+	});
+	if (!response.ok) throw new Error(`fabric response ${String(response.status)}`);
+	return response;
+}
+function upstreamUrl(fabricUrl, path, query) {
+	const url = new URL(path, fabricUrl);
+	for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
+	return url;
+}
+function methodNotAllowed(response) {
+	response.writeHead(405, { allow: "GET" });
+	response.end();
+}
+function respondJson(response, status, value) {
+	response.writeHead(status, {
+		"content-type": "application/json; charset=utf-8",
+		"cache-control": "no-store"
+	});
+	response.end(JSON.stringify(value));
+}
+function requiredQuery(request, name) {
+	const value = new URL(request.url ?? "/", "http://localhost").searchParams.get(name)?.trim();
+	if (value === void 0 || value === "") throw new Error(`${name} is required`);
+	return value;
+}
+function requestLimit(request, fallback) {
+	const value = new URL(request.url ?? "/", "http://localhost").searchParams.get("limit");
+	if (value === null) return fallback;
+	const parsed = Number(value);
+	if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error("limit must be positive");
+	return Math.min(parsed, fallback);
+}
+function requestCursor(request) {
+	const value = new URL(request.url ?? "/", "http://localhost").searchParams.get("cursor");
+	if (value === null) return 0;
+	const parsed = Number(value);
+	if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error("cursor must be non-negative");
+	return parsed;
+}
+function boundedLimit(value, fallback) {
+	return Number.isSafeInteger(value) && value > 0 ? Math.min(value, fallback) : fallback;
+}
+function boundedCursor(value) {
+	return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+function projectSession(value) {
+	const record = object(value);
+	const sessionId = text(record?.session_id);
+	const adapterId = text(record?.adapter_id);
+	const label = text(record?.label);
+	const status = text(record?.status);
+	const revision = integer(record?.revision);
+	const createdAt = text(record?.created_at);
+	const updatedAt = text(record?.updated_at);
+	const capabilities = Array.isArray(record?.capabilities) && record.capabilities.every((item) => typeof item === "string") ? record.capabilities : void 0;
+	const location = text(record?.location);
+	if (sessionId === void 0 || adapterId === void 0 || label === void 0 || status === void 0 || revision === void 0 || createdAt === void 0 || updatedAt === void 0 || capabilities === void 0) return void 0;
+	return {
+		sessionId,
+		adapterId,
+		label,
+		status,
+		capabilities,
+		revision,
+		createdAt,
+		updatedAt,
+		...location === void 0 ? {} : { location }
+	};
+}
+function projectEvent(value) {
+	const record = object(value);
+	const eventId = text(record?.event_id);
+	const sessionId = text(record?.session_id);
+	const sequence = integer(record?.sequence);
+	const cursor = integer(record?.cursor);
+	const eventType = text(record?.event_type);
+	const occurredAt = text(record?.occurred_at);
+	const recordedAt = text(record?.recorded_at);
+	if (eventId === void 0 || sessionId === void 0 || sequence === void 0 || cursor === void 0 || eventType === void 0 || occurredAt === void 0 || recordedAt === void 0 || !("payload" in (record ?? {}))) return void 0;
+	const payload = safePayload(record.payload);
+	if (payload === void 0) return void 0;
+	return {
+		eventId,
+		sessionId,
+		sequence,
+		cursor,
+		eventType,
+		payload,
+		occurredAt,
+		recordedAt
+	};
+}
+/** Preserve generic event inspection while excluding the service's private routing credentials. */
+function safePayload(value) {
+	if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+	if (typeof value === "number") return Number.isFinite(value) ? value : void 0;
+	if (Array.isArray(value)) {
+		const items = value.map(safePayload);
+		return items.some((item) => item === void 0) ? void 0 : items;
+	}
+	const record = object(value);
+	if (record === void 0) return void 0;
+	const projected = {};
+	for (const [key, entry] of Object.entries(record)) {
+		if (key === "adapter_key" || key === "target_ref" || key === "lease_token" || key.endsWith("_token")) continue;
+		const nested = safePayload(entry);
+		if (nested === void 0) return void 0;
+		projected[key] = nested;
+	}
+	return projected;
+}
+function object(value) {
+	return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
+}
+function text(value) {
+	return typeof value === "string" ? value : void 0;
+}
+function integer(value) {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : void 0;
 }
 //#endregion
 //#region src/index.ts
@@ -866,6 +1125,10 @@ var CrewMessagingProvider = class extends Service {
 			tuning: dashboardTuning(config),
 			fabricUrl: config.url ?? "http://127.0.0.1:8787"
 		});
+		const fabricUrl = config.url ?? "http://127.0.0.1:8787";
+		const sessions = crewForeignSessionsHandler({ fabricUrl });
+		const events = crewForeignSessionEventsHandler({ fabricUrl });
+		const stream = crewForeignSessionEventsStreamHandler({ fabricUrl });
 		ctx.inject(["webServer"], (webCtx) => {
 			const webServer = webCtx.get("webServer");
 			webCtx.effect(() => webServer.register({
@@ -873,6 +1136,21 @@ var CrewMessagingProvider = class extends Service {
 				path: CREW_DASHBOARD_PATH,
 				handler: dashboard
 			}), "crew-messaging: dashboard route");
+			webCtx.effect(() => webServer.register({
+				kind: "exact",
+				path: CREW_SESSIONS_PATH,
+				handler: sessions
+			}), "crew-messaging: foreign sessions route");
+			webCtx.effect(() => webServer.register({
+				kind: "exact",
+				path: CREW_SESSION_EVENTS_PATH,
+				handler: events
+			}), "crew-messaging: foreign session events route");
+			webCtx.effect(() => webServer.register({
+				kind: "exact",
+				path: CREW_SESSION_EVENTS_STREAM_PATH,
+				handler: stream
+			}), "crew-messaging: foreign session event stream route");
 		});
 		const disposeTools = installScopedTools(ctx, this.service);
 		ctx.effect(() => {

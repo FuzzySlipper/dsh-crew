@@ -1,0 +1,19 @@
+/** Disposable styles for the independent foreign-session workbench. */
+
+export const crewSessionWorkbenchCss = String.raw`
+.dshCrewSessionsTrigger{display:inline-flex;min-height:32px;align-items:center;gap:8px;border:0;border-radius:8px;padding:6px 10px;color:var(--dsw-alias-label-primary);background:transparent;cursor:pointer}.dshCrewSessionsTrigger:hover,.dshCrewSessionsTrigger:focus-visible{background:var(--dsw-alias-interactive-bg-hover)}
+.dshCrewSessionsOverlay{position:fixed;inset:0;z-index:2147483001;display:flex;justify-content:flex-end;pointer-events:none}.dshCrewSessionsDrawer{box-sizing:border-box;width:min(920px,calc(100vw - 80px));height:100%;overflow:hidden;pointer-events:auto;border-left:1px solid var(--dsw-alias-border-l2);padding:20px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);box-shadow:var(--dsw-shadow-lv3)}
+.dshCrewSessionsHeader,.dshCrewSessionsToolbar{display:flex;align-items:center;justify-content:space-between;gap:12px}.dshCrewSessionsHeader h2,.dshCrewSessionsHeader p,.dshCrewSessionsEmpty,.dshCrewSessionEvent p{margin:0}.dshCrewSessionsHeader p,.dshCrewSessionsMuted{color:var(--dsw-alias-label-secondary);font-size:13px}.dshCrewSessionsButton{min-height:32px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 10px;font:inherit;color:inherit;background:transparent;cursor:pointer}.dshCrewSessionsButton:hover,.dshCrewSessionsButton:focus-visible,.dshCrewSessionList button:hover,.dshCrewSessionList button:focus-visible{background:var(--dsw-alias-interactive-bg-hover)}
+.dshCrewSessionsGrid{display:grid;grid-template-columns:minmax(220px,300px) minmax(0,1fr);gap:16px;height:calc(100% - 74px);margin-top:18px}.dshCrewSessionList,.dshCrewSessionTimeline{min-height:0;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1)}.dshCrewSessionList{overflow:auto;padding:8px}.dshCrewSessionList button{display:grid;width:100%;gap:4px;border:0;border-radius:7px;padding:10px;text-align:left;font:inherit;color:inherit;background:transparent;cursor:pointer}.dshCrewSessionList button[aria-current=true]{background:var(--dsw-alias-interactive-bg-hover)}.dshCrewSessionList small{color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}.dshCrewSessionTimeline{display:grid;grid-template-rows:auto minmax(0,1fr);overflow:hidden}.dshCrewSessionsToolbar{padding:12px;border-bottom:1px solid var(--dsw-alias-border-l2)}.dshCrewSessionEvents{display:grid;align-content:start;gap:10px;overflow:auto;padding:12px}.dshCrewSessionEvent{display:grid;gap:7px;border-left:2px solid var(--dsw-alias-brand-primary);padding:0 0 0 10px}.dshCrewSessionEvent header{display:flex;justify-content:space-between;gap:12px;font-size:13px}.dshCrewSessionEvent time,.dshCrewSessionEvent small{color:var(--dsw-alias-label-secondary);font-size:12px}.dshCrewSessionEvent pre{max-height:240px;overflow:auto;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-label-secondary)}.dshCrewSessionsState{border-radius:999px;padding:2px 8px;font-size:12px;background:var(--dsw-alias-bg-module-platform)}.dshCrewSessionsState[data-state=error]{color:var(--dsw-alias-state-error-primary)}
+@media(max-width:720px){.dshCrewSessionsDrawer{width:100%;padding:16px}.dshCrewSessionsGrid{grid-template-columns:1fr;grid-template-rows:minmax(150px,35%) minmax(0,1fr);height:calc(100% - 84px)}}
+`
+
+/** Install one owned style node for the current client plugin fiber. */
+export function installCrewSessionWorkbenchStyle(target: Document): () => void {
+  const style = target.createElement('style')
+  style.dataset.plugin = 'dsh-crew-messaging'
+  style.dataset.pluginCss = 'dsh-crew-messaging/foreign-session-workbench'
+  style.textContent = crewSessionWorkbenchCss
+  target.head.appendChild(style)
+  return () => { style.remove() }
+}

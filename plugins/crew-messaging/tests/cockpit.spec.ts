@@ -20,17 +20,34 @@ describe('Crew cockpit client', () => {
 
   it('registers and disposes the global Settings section through the slot convention', () => {
     let registration: { readonly id: string; readonly order: number; readonly label: string } | undefined
-    let injected: (() => void) | undefined
+    const injected = new Map<string, () => void>()
     const dispose = () => { registration = undefined }
     apply({ slots: {
-      inject: (_name, callback) => { injected = callback },
+      inject: (name, callback) => { injected.set(name, callback) },
       register: (options) => { registration = options; return dispose },
-    } })
+    }, logger: { warn: () => {} }, effect: effect => { void effect() } })
     expect(inject).toEqual(['slots'])
-    expect(injected).toBeTypeOf('function')
-    const disposer = injected!()
+    expect(injected.get('settings.section')).toBeTypeOf('function')
+    const disposer = injected.get('settings.section')!()
     expect(registration).toEqual({ name: 'settings.section', id: 'crew-messaging', order: 35, label: 'Crew' })
     disposer()
     expect(registration).toBeUndefined()
+  })
+
+  it('keeps the cockpit and adds independent footer and overlay registrations', () => {
+    const injected = new Map<string, () => void>()
+    const registrations: Array<{ readonly name: string; readonly id: string }> = []
+    apply({ slots: {
+      inject: (name, callback) => { injected.set(name, callback) },
+      register: options => { registrations.push(options); return () => {} },
+    }, logger: { warn: () => {} }, effect: effect => { void effect() } })
+    injected.get('settings.section')!()
+    injected.get('sidebar.footer.action')!()
+    injected.get('shell.overlay')!()
+    expect(registrations.map(({ name, id }) => ({ name, id }))).toEqual([
+      { name: 'settings.section', id: 'crew-messaging' },
+      { name: 'sidebar.footer.action', id: 'crew-messaging-sessions' },
+      { name: 'shell.overlay', id: 'crew-messaging-sessions' },
+    ])
   })
 })

@@ -52,4 +52,36 @@ export interface CrewDashboardSnapshot {
     readonly messages: readonly CrewMessageSummary[];
     readonly deliveries: readonly CrewDeliverySummary[];
 }
+/** Browser-safe projection of one adapter-owned foreign runtime session. */
+export interface CrewForeignSession {
+    readonly sessionId: string;
+    readonly adapterId: string;
+    readonly label: string;
+    readonly location?: string;
+    readonly status: string;
+    readonly capabilities: readonly string[];
+    readonly revision: number;
+    readonly createdAt: string;
+    readonly updatedAt: string;
+}
+/** Browser-safe, append-only observation from a foreign runtime session. */
+export interface CrewForeignSessionEvent {
+    readonly eventId: string;
+    readonly sessionId: string;
+    readonly sequence: number;
+    readonly cursor: number;
+    readonly eventType: string;
+    /** Adapter-owned event data, with routing credentials and opaque targets removed. */
+    readonly payload: unknown;
+    readonly occurredAt: string;
+    readonly recordedAt: string;
+}
+/** Bounded read-only response for the foreign-session workbench. */
+export interface CrewForeignSessionsSnapshot {
+    readonly sessions: readonly CrewForeignSession[];
+}
+/** Bounded read-only response for one foreign session timeline. */
+export interface CrewForeignSessionEventsSnapshot {
+    readonly events: readonly CrewForeignSessionEvent[];
+}
 //# sourceMappingURL=types.d.ts.map
