@@ -6,6 +6,11 @@ export const CREW_SESSIONS_ENDPOINT = '/plugins/dsh-crew-messaging/sessions'
 export const CREW_SESSION_EVENTS_ENDPOINT = '/plugins/dsh-crew-messaging/session-events'
 export const CREW_SESSION_EVENTS_STREAM_ENDPOINT = '/plugins/dsh-crew-messaging/session-events/stream'
 export const CREW_SESSION_PROMPT_ENDPOINT = '/plugins/dsh-crew-messaging/session-prompt'
+export const CREW_CODEX_CREATE_ENDPOINT = '/plugins/dsh-crew-messaging/codex/create'
+export const CREW_CODEX_INTERRUPT_ENDPOINT = '/plugins/dsh-crew-messaging/codex/interrupt'
+export const CREW_CODEX_INTERACTIONS_ENDPOINT = '/plugins/dsh-crew-messaging/codex/interactions'
+export const CREW_CODEX_RESPOND_ENDPOINT = '/plugins/dsh-crew-messaging/codex/respond'
+export const CREW_CODEX_CAPABILITIES_ENDPOINT = '/plugins/dsh-crew-messaging/codex/capabilities'
 export const CREW_SESSION_PROMPT_MAX_CHARS = 12_000
 
 /** Minimal EventSource face so controller tests do not need a browser transport. */
@@ -20,7 +25,14 @@ export interface CrewSessionWorkbenchPort {
   listEvents(sessionId: string, cursor: number, signal: AbortSignal): Promise<CrewForeignSessionEventsSnapshot>
   stream(sessionId: string, cursor: number): CrewEventSource
   submit?(sessionId: string, text: string, operationId: string): Promise<{ readonly messageId: string; readonly replayed: boolean }>
+  controlCapabilities?(): Promise<readonly string[]>
+  create?(cwd: string, operationId: string): Promise<{ readonly sessionId: string }>
+  interrupt?(sessionId: string, turnId: string, operationId: string): Promise<void>
+  interactions?(sessionId: string, signal: AbortSignal): Promise<readonly CrewPendingInteraction[]>
+  respondInteraction?(sessionId: string, id: string, method: string, response: unknown): Promise<void>
 }
+export interface CrewInteractionQuestion { readonly id: string; readonly header: string; readonly question: string; readonly sensitive: boolean; readonly options: readonly { readonly label: string; readonly description: string }[] }
+export interface CrewPendingInteraction { readonly id: string; readonly sessionId: string; readonly kind: string; readonly prompt?: string; readonly allowedDecisions: readonly string[]; readonly createdAt: string; readonly status: 'pending'; readonly capability: 'respond-interactions'; readonly questions: readonly CrewInteractionQuestion[]; readonly permissions: readonly string[] }
 
 export type CrewSessionWorkbenchConnection = 'closed' | 'connecting' | 'open' | 'reconnecting' | 'error'
 
@@ -36,10 +48,12 @@ export interface CrewSessionWorkbenchState {
   readonly error: string | undefined
   readonly submitting: boolean
   readonly submissionError: string | undefined
+  readonly interactions: readonly CrewPendingInteraction[]
+  readonly controlCapabilities: readonly string[]
 }
 
 const INITIAL: CrewSessionWorkbenchState = {
-  open: false, loading: false, sessions: [], selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined, submitting: false, submissionError: undefined,
+  open: false, loading: false, sessions: [], selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined, submitting: false, submissionError: undefined, interactions: [], controlCapabilities: [],
 }
 
 /**
@@ -54,6 +68,11 @@ export class CrewSessionWorkbenchController {
   private selectionGeneration = 0
   private disposed = false
   private pendingSubmission: { readonly sessionId: string; readonly text: string; readonly operationId: string } | undefined
+  private pendingCreate: { readonly cwd: string; readonly operationId: string } | undefined
+  private creating = false
+  private interactionAbort: AbortController | undefined
+  private interactionTimer: ReturnType<typeof setTimeout> | undefined
+  private interactionLoading = false
 
   public constructor(private readonly port: CrewSessionWorkbenchPort, private readonly report: (error: unknown) => void = () => {}, private readonly operationId: () => string = () => crypto.randomUUID()) {}
 
@@ -68,7 +87,7 @@ export class CrewSessionWorkbenchController {
   public close(): void {
     this.listAbort?.abort(); this.listAbort = undefined
     this.selectionGeneration += 1; this.stopSelection()
-    this.patch({ open: false, loading: false, selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined, submitting: false, submissionError: undefined })
+    this.patch({ open: false, loading: false, selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined, submitting: false, submissionError: undefined, interactions: [], controlCapabilities: [] })
   }
   /** Dispose the controller when the DSH client plugin fiber unloads. */
   public dispose(): void { if (this.disposed) return; this.disposed = true; this.close(); this.listeners.clear() }
@@ -84,7 +103,10 @@ export class CrewSessionWorkbenchController {
       if (this.disposed || !this.state.open || controller.signal.aborted || this.listAbort !== controller) return
       const current = this.state.selectedSessionId
       const selected = current !== undefined && snapshot.sessions.some(session => session.sessionId === current) ? current : snapshot.sessions[0]?.sessionId
-      this.patch({ sessions: snapshot.sessions, loading: false })
+      let controlCapabilities: readonly string[] = []
+      try { controlCapabilities = await this.port.controlCapabilities?.() ?? [] } catch { /* controls stay absent when the sidecar is offline */ }
+      if (controller.signal.aborted || this.listAbort !== controller) return
+      this.patch({ sessions: snapshot.sessions, loading: false, controlCapabilities })
       if (selected === undefined) { this.selectionGeneration += 1; this.stopSelection(); this.patch({ selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed' }); return }
       if (selected !== current || this.state.events.length === 0) await this.select(selected)
     } catch (error) {
@@ -106,6 +128,8 @@ export class CrewSessionWorkbenchController {
       const merged = mergeEvents([], history.events)
       const cursor = latestCursor(merged)
       this.patch({ events: merged, cursor })
+      await this.reloadInteractions(sessionId, generation)
+      this.scheduleInteractions(sessionId, generation)
       this.openStream(sessionId, cursor, generation)
     } catch (error) {
       if (controller.signal.aborted || generation !== this.selectionGeneration) return
@@ -139,6 +163,15 @@ export class CrewSessionWorkbenchController {
 
   /** Whether the selected public runtime session advertises queued prompt delivery. */
   public canPrompt(sessionId: string): boolean { return this.state.sessions.some(session => session.sessionId === sessionId && session.capabilities.includes('queued-prompt-delivery')) }
+  public canInterrupt(sessionId: string): boolean { return this.state.sessions.some(session => session.sessionId === sessionId && session.capabilities.includes('interrupt-native-turn')) }
+  public canRespond(sessionId: string): boolean { return this.state.sessions.some(session => session.sessionId === sessionId && session.capabilities.includes('respond-interactions')) }
+  public canCreate(): boolean { return this.state.controlCapabilities.includes('create-codex-session') }
+  public async create(cwd: string): Promise<boolean> { if (this.port.create === undefined || this.disposed || this.creating || !this.canCreate()) return false; const pending = this.pendingCreate?.cwd === cwd ? this.pendingCreate : { cwd, operationId: this.operationId() }; this.pendingCreate = pending; this.creating = true; try { await this.port.create(pending.cwd, pending.operationId); this.pendingCreate = undefined; await this.refresh(); return true } catch (error) { this.report(error); this.patch({ error: message(error) }); return false } finally { this.creating = false } }
+  public async interrupt(turnId: string): Promise<boolean> { const sessionId = this.state.selectedSessionId; if (this.port.interrupt === undefined || sessionId === undefined || this.disposed || !this.canInterrupt(sessionId)) return false; try { await this.port.interrupt(sessionId, turnId, this.operationId()); return true } catch (error) { this.report(error); this.patch({ error: message(error) }); return false } }
+  public async respondInteraction(interaction: CrewPendingInteraction, decision: string, responseOverride?: unknown): Promise<boolean> { if (this.port.respondInteraction === undefined || interaction.sessionId !== this.state.selectedSessionId || !this.canRespond(interaction.sessionId)) return false; const response = responseOverride ?? interactionResponse(interaction.kind, decision); if (response === undefined) return false; try { await this.port.respondInteraction(interaction.sessionId, interaction.id, interaction.kind, response); await this.reloadInteractions(interaction.sessionId, this.selectionGeneration); return true } catch (error) { this.report(error); this.patch({ error: message(error) }); return false } }
+
+  private async reloadInteractions(sessionId: string, generation: number): Promise<void> { if (this.port.interactions === undefined || !this.canRespond(sessionId) || this.interactionLoading) return; this.interactionAbort?.abort(); const controller = new AbortController(); this.interactionAbort = controller; this.interactionLoading = true; try { const interactions = await this.port.interactions(sessionId, controller.signal); if (!this.disposed && !controller.signal.aborted && generation === this.selectionGeneration && sessionId === this.state.selectedSessionId) this.patch({ interactions }) } catch (error) { if (!controller.signal.aborted && generation === this.selectionGeneration) this.report(error) } finally { if (this.interactionAbort === controller) this.interactionAbort = undefined; this.interactionLoading = false } }
+  private scheduleInteractions(sessionId: string, generation: number): void { if (this.disposed || generation !== this.selectionGeneration || !this.state.open || !this.canRespond(sessionId)) return; this.interactionTimer = setTimeout(async () => { this.interactionTimer = undefined; await this.reloadInteractions(sessionId, generation); this.scheduleInteractions(sessionId, generation) }, 1_000) }
 
   private openStream(sessionId: string, cursor: number, generation: number): void {
     const source = this.port.stream(sessionId, cursor); this.source = source
@@ -157,7 +190,7 @@ export class CrewSessionWorkbenchController {
     })
   }
 
-  private stopSelection(): void { this.source?.close(); this.source = undefined; this.eventsAbort?.abort(); this.eventsAbort = undefined }
+  private stopSelection(): void { this.source?.close(); this.source = undefined; this.eventsAbort?.abort(); this.eventsAbort = undefined; this.interactionAbort?.abort(); this.interactionAbort = undefined; if (this.interactionTimer !== undefined) clearTimeout(this.interactionTimer); this.interactionTimer = undefined; this.interactionLoading = false }
   private patch(patch: Partial<CrewSessionWorkbenchState>): void {
     this.state = { ...this.state, ...patch }
     for (const listener of this.listeners) listener()
@@ -176,6 +209,11 @@ export function createCrewSessionWorkbenchPort(input: {
     listEvents: async (sessionId, cursor, signal) => decodeSnapshot(await fetchJson(request, `${CREW_SESSION_EVENTS_ENDPOINT}?${new URLSearchParams({ session_id: sessionId, cursor: String(cursor) })}`, signal), decodeEvents),
     stream: (sessionId, cursor) => eventSource(`${CREW_SESSION_EVENTS_STREAM_ENDPOINT}?${new URLSearchParams({ session_id: sessionId, cursor: String(cursor) })}`),
     submit: async (sessionId, text, operationId) => decodeSubmission(await fetchJson(request, CREW_SESSION_PROMPT_ENDPOINT, undefined, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: sessionId, text, operation_id: operationId }) })),
+    controlCapabilities: async () => { const value = object(await fetchJson(request, CREW_CODEX_CAPABILITIES_ENDPOINT)); const capabilities = Array.isArray(value?.capabilities) && value.capabilities.every(item => typeof item === 'string') ? value.capabilities as readonly string[] : undefined; if (capabilities === undefined) throw new Error('received invalid Codex capabilities'); return capabilities },
+    create: async (cwd, operationId) => { const value = object(await fetchJson(request, CREW_CODEX_CREATE_ENDPOINT, undefined, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cwd, operation_id: operationId }) })); const sessionId = text(value?.sessionId); if (sessionId === undefined) throw new Error('received an invalid Codex create response'); return { sessionId } },
+    interrupt: async (sessionId, turnId, operationId) => { await fetchJson(request, CREW_CODEX_INTERRUPT_ENDPOINT, undefined, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: sessionId, turn_id: turnId, operation_id: operationId }) }) },
+    interactions: async (sessionId, signal) => { const value = object(await fetchJson(request, `${CREW_CODEX_INTERACTIONS_ENDPOINT}?${new URLSearchParams({ session_id: sessionId })}`, signal)); const values = Array.isArray(value?.interactions) ? value.interactions.map(decodeInteraction) : undefined; if (values === undefined || values.some(item => item === undefined)) throw new Error('received an invalid Codex interaction response'); return values as readonly CrewPendingInteraction[] },
+    respondInteraction: async (sessionId, id, method, response) => { await fetchJson(request, CREW_CODEX_RESPOND_ENDPOINT, undefined, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: sessionId, id, method, response }) }) },
   }
 }
 
@@ -208,6 +246,9 @@ function decodeSubmission(value: unknown): { readonly messageId: string; readonl
   if (messageId === undefined || typeof replayed !== 'boolean') throw new Error('received an invalid Crew prompt response')
   return { messageId, replayed }
 }
+function decodeInteraction(value: unknown): CrewPendingInteraction | undefined { const record = object(value); const id = text(record?.id); const sessionId = text(record?.session_id); const kind = text(record?.kind); const createdAt = text(record?.created_at); const status = text(record?.status); const capability = text(record?.capability); const allowedDecisions = Array.isArray(record?.allowed_decisions) && record.allowed_decisions.every(item => typeof item === 'string') ? record.allowed_decisions as readonly string[] : undefined; const prompt = text(record?.prompt); const questions = Array.isArray(record?.questions) ? record.questions.map(decodeQuestion) : []; const permissions = record?.permissions === undefined ? [] : Array.isArray(record.permissions) && record.permissions.every(item => typeof item === 'string') ? record.permissions as readonly string[] : undefined; if (id === undefined || sessionId === undefined || kind === undefined || createdAt === undefined || status !== 'pending' || capability !== 'respond-interactions' || allowedDecisions === undefined || questions.some(question => question === undefined) || permissions === undefined) return undefined; return { id, sessionId, kind, createdAt, status, capability, allowedDecisions, questions: questions as readonly CrewInteractionQuestion[], permissions, ...(prompt === undefined ? {} : { prompt }) } }
+function decodeQuestion(value: unknown): CrewInteractionQuestion | undefined { const record = object(value); const id = text(record?.id); const header = text(record?.header); const question = text(record?.question); const sensitive = record?.sensitive === true; const options = Array.isArray(record?.options) ? record.options.map(option => { const item = object(option); const label = text(item?.label); const description = text(item?.description); return label === undefined || description === undefined ? undefined : { label, description } }) : []; if (id === undefined || header === undefined || question === undefined || options.some(option => option === undefined)) return undefined; return { id, header, question, sensitive, options: options as readonly { readonly label: string; readonly description: string }[] } }
+function interactionResponse(kind: string, decision: string): unknown | undefined { if ((kind === 'item/commandExecution/requestApproval' || kind === 'item/fileChange/requestApproval') && (decision === 'accept' || decision === 'decline' || decision === 'cancel')) return { decision }; if (kind === 'item/permissions/requestApproval' && decision === 'deny') return { permissions: {}, scope: 'turn' }; if (kind === 'item/tool/requestUserInput' && decision === 'submit-empty') return { answers: {} }; if (kind === 'mcpServer/elicitation/request' && (decision === 'decline' || decision === 'cancel')) return { action: decision, content: null }; return undefined }
 function decodeSession(value: unknown): CrewForeignSession | undefined {
   const record = object(value); const sessionId = text(record?.sessionId); const adapterId = text(record?.adapterId); const label = text(record?.label); const status = text(record?.status)
   const revision = integer(record?.revision); const createdAt = text(record?.createdAt); const updatedAt = text(record?.updatedAt); const location = text(record?.location)

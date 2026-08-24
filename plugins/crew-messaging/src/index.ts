@@ -19,6 +19,7 @@ import {
   CREW_SESSION_EVENTS_PATH, CREW_SESSION_EVENTS_STREAM_PATH, CREW_SESSION_PROMPT_PATH, CREW_SESSIONS_PATH,
   crewForeignSessionEventsHandler, crewForeignSessionEventsStreamHandler, crewForeignSessionPromptHandler, crewForeignSessionsHandler,
 } from './dashboard/foreign-sessions.ts'
+import { CodexControlClient, codexControlHandler, CREW_CODEX_CAPABILITIES_PATH, CREW_CODEX_CREATE_PATH, CREW_CODEX_INTERRUPT_PATH, CREW_CODEX_INTERACTIONS_PATH, CREW_CODEX_RESPOND_PATH } from './dashboard/codex-controls.ts'
 
 interface WebRouteHost { register(route: { kind: 'exact'; path: string; handler: (request: import('node:http').IncomingMessage, response: import('node:http').ServerResponse) => void | Promise<void> }): () => void }
 
@@ -54,6 +55,7 @@ export class CrewMessagingProvider extends Service {
     const events = crewForeignSessionEventsHandler({ fabricUrl })
     const stream = crewForeignSessionEventsStreamHandler({ fabricUrl })
     const prompt = crewForeignSessionPromptHandler({ adapter: this.service })
+    const controls = codexControlHandler(new CodexControlClient(config.codexControlUrl ?? 'http://127.0.0.1:8788'))
     ctx.inject(['webServer'], webCtx => {
       const webServer = webCtx.get('webServer') as WebRouteHost
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_DASHBOARD_PATH, handler: dashboard }), 'crew-messaging: dashboard route')
@@ -61,6 +63,11 @@ export class CrewMessagingProvider extends Service {
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_SESSION_EVENTS_PATH, handler: events }), 'crew-messaging: foreign session events route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_SESSION_EVENTS_STREAM_PATH, handler: stream }), 'crew-messaging: foreign session event stream route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_SESSION_PROMPT_PATH, handler: prompt }), 'crew-messaging: foreign session prompt route')
+      webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_CODEX_CREATE_PATH, handler: controls }), 'crew-messaging: Codex create route')
+      webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_CODEX_CAPABILITIES_PATH, handler: controls }), 'crew-messaging: Codex capabilities route')
+      webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_CODEX_INTERRUPT_PATH, handler: controls }), 'crew-messaging: Codex interrupt route')
+      webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_CODEX_INTERACTIONS_PATH, handler: controls }), 'crew-messaging: Codex interactions route')
+      webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_CODEX_RESPOND_PATH, handler: controls }), 'crew-messaging: Codex response route')
     })
     const disposeTools = installScopedTools(ctx, this.service)
     ctx.effect(() => {

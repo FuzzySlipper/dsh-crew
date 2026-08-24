@@ -153,6 +153,7 @@ const defaults$1 = {
 	adapterId: "dsh-crew-messaging",
 	instanceId: "dsh-crew-messaging-local",
 	workbenchAddress: "dsh/workbench",
+	codexControlUrl: "http://127.0.0.1:8788",
 	leaseDuration: "2m",
 	renewMs: 45e3,
 	pollMs: 1e3,
@@ -859,7 +860,7 @@ function projectMessages(value) {
 			to,
 			createdAt,
 			preview: preview(text$1(entry.body) ?? ""),
-			...optional("replyTo", text$1(entry.reply_to_message_id))
+			...optional$1("replyTo", text$1(entry.reply_to_message_id))
 		}];
 	});
 }
@@ -876,8 +877,8 @@ function projectDeliveries(value) {
 			messageId,
 			recipient,
 			state,
-			...optional("action", text$1(entry.dispatch_action)),
-			...optional("updatedAt", updatedAt)
+			...optional$1("action", text$1(entry.dispatch_action)),
+			...optional$1("updatedAt", updatedAt)
 		}];
 	});
 }
@@ -890,7 +891,7 @@ function array(value) {
 function text$1(value) {
 	return typeof value === "string" ? value : void 0;
 }
-function optional(key, value) {
+function optional$1(key, value) {
 	return value === void 0 ? {} : { [key]: value };
 }
 function preview(value) {
@@ -1189,6 +1190,130 @@ function integer(value) {
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : void 0;
 }
 //#endregion
+//#region src/dashboard/codex-controls.ts
+const CREW_CODEX_CREATE_PATH = "/plugins/dsh-crew-messaging/codex/create";
+const CREW_CODEX_INTERRUPT_PATH = "/plugins/dsh-crew-messaging/codex/interrupt";
+const CREW_CODEX_INTERACTIONS_PATH = "/plugins/dsh-crew-messaging/codex/interactions";
+const CREW_CODEX_RESPOND_PATH = "/plugins/dsh-crew-messaging/codex/respond";
+const CREW_CODEX_CAPABILITIES_PATH = "/plugins/dsh-crew-messaging/codex/capabilities";
+var CodexControlClient = class {
+	base;
+	constructor(base) {
+		this.base = base;
+	}
+	async capabilities() {
+		const response = await fetch(new URL("/v1/controls/capabilities", this.base), { signal: AbortSignal.timeout(1500) });
+		if (!response.ok) throw new Error(`Codex controls failed (${response.status})`);
+		return await response.json();
+	}
+	async create(operationId, cwd) {
+		const value = await this.call("/v1/controls/threads", {
+			operation_id: operationId,
+			cwd
+		});
+		if (typeof value.session_id !== "string") throw new Error("Codex controls returned an invalid create receipt");
+		return { sessionId: value.session_id };
+	}
+	async interrupt(operationId, sessionId, turnId) {
+		await this.call("/v1/controls/interrupt", {
+			operation_id: operationId,
+			session_id: sessionId,
+			turn_id: turnId
+		});
+	}
+	async interactions(sessionId) {
+		const response = await fetch(new URL(`/v1/controls/interactions?${new URLSearchParams({ session_id: sessionId })}`, this.base), { signal: AbortSignal.timeout(1500) });
+		if (!response.ok) throw new Error(`Codex controls failed (${response.status})`);
+		return await response.json();
+	}
+	async respond(sessionId, id, method, response) {
+		await this.call("/v1/controls/interactions/respond", {
+			session_id: sessionId,
+			id,
+			method,
+			response
+		});
+	}
+	async call(path, body) {
+		const response = await fetch(new URL(path, this.base), {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+			signal: AbortSignal.timeout(5e3)
+		});
+		const value = await response.json();
+		if (!response.ok) throw new Error(typeof value?.error === "string" ? value.error : `Codex controls failed (${response.status})`);
+		return value;
+	}
+};
+function codexControlHandler(controls) {
+	return async (request, response) => {
+		try {
+			const value = await read(request);
+			if (request.method === "GET" && request.url === "/plugins/dsh-crew-messaging/codex/capabilities") {
+				write(response, 200, await controls.capabilities());
+				return;
+			}
+			if (request.method === "GET" && request.url?.startsWith("/plugins/dsh-crew-messaging/codex/interactions")) {
+				write(response, 200, await controls.interactions(new URL(request.url, "http://localhost").searchParams.get("session_id") ?? ""));
+				return;
+			}
+			if (request.method !== "POST") {
+				response.writeHead(405, { allow: "GET, POST" });
+				response.end();
+				return;
+			}
+			if (request.url === "/plugins/dsh-crew-messaging/codex/create") {
+				write(response, 200, await controls.create(required(value, "operation_id"), optional(value, "cwd")));
+				return;
+			}
+			if (request.url === "/plugins/dsh-crew-messaging/codex/interrupt") {
+				await controls.interrupt(required(value, "operation_id"), required(value, "session_id"), required(value, "turn_id"));
+				write(response, 200, { ok: true });
+				return;
+			}
+			if (request.url === "/plugins/dsh-crew-messaging/codex/respond") {
+				await controls.respond(required(value, "session_id"), required(value, "id"), required(value, "method"), value.response);
+				write(response, 200, { ok: true });
+				return;
+			}
+			response.writeHead(404);
+			response.end();
+		} catch (error) {
+			write(response, error instanceof BodyTooLarge ? 413 : 400, { error: error instanceof Error ? error.message : "Codex control failed" });
+		}
+	};
+}
+var BodyTooLarge = class extends Error {};
+async function read(request) {
+	if (request.method === "GET") return {};
+	const chunks = [];
+	let size = 0;
+	for await (const chunk of request) {
+		const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+		size += value.length;
+		if (size > 32 * 1024) throw new BodyTooLarge("control request is too large");
+		chunks.push(value);
+	}
+	return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+function required(value, key) {
+	const result = value[key];
+	if (typeof result !== "string" || result.trim() === "") throw new Error(`${key} is required`);
+	return result;
+}
+function optional(value, key) {
+	const result = value[key];
+	return typeof result === "string" ? result : "";
+}
+function write(response, status, value) {
+	response.writeHead(status, {
+		"content-type": "application/json; charset=utf-8",
+		"cache-control": "no-store"
+	});
+	response.end(JSON.stringify(value));
+}
+//#endregion
 //#region src/index.ts
 /** DSH provider entry point for the local crew messaging fabric. */
 /** Cordis provider plus consumer: it owns only its adapter lease and created cold-root handles. */
@@ -1210,6 +1335,7 @@ var CrewMessagingProvider = class extends Service {
 		const events = crewForeignSessionEventsHandler({ fabricUrl });
 		const stream = crewForeignSessionEventsStreamHandler({ fabricUrl });
 		const prompt = crewForeignSessionPromptHandler({ adapter: this.service });
+		const controls = codexControlHandler(new CodexControlClient(config.codexControlUrl ?? "http://127.0.0.1:8788"));
 		ctx.inject(["webServer"], (webCtx) => {
 			const webServer = webCtx.get("webServer");
 			webCtx.effect(() => webServer.register({
@@ -1237,6 +1363,31 @@ var CrewMessagingProvider = class extends Service {
 				path: CREW_SESSION_PROMPT_PATH,
 				handler: prompt
 			}), "crew-messaging: foreign session prompt route");
+			webCtx.effect(() => webServer.register({
+				kind: "exact",
+				path: CREW_CODEX_CREATE_PATH,
+				handler: controls
+			}), "crew-messaging: Codex create route");
+			webCtx.effect(() => webServer.register({
+				kind: "exact",
+				path: CREW_CODEX_CAPABILITIES_PATH,
+				handler: controls
+			}), "crew-messaging: Codex capabilities route");
+			webCtx.effect(() => webServer.register({
+				kind: "exact",
+				path: CREW_CODEX_INTERRUPT_PATH,
+				handler: controls
+			}), "crew-messaging: Codex interrupt route");
+			webCtx.effect(() => webServer.register({
+				kind: "exact",
+				path: CREW_CODEX_INTERACTIONS_PATH,
+				handler: controls
+			}), "crew-messaging: Codex interactions route");
+			webCtx.effect(() => webServer.register({
+				kind: "exact",
+				path: CREW_CODEX_RESPOND_PATH,
+				handler: controls
+			}), "crew-messaging: Codex response route");
 		});
 		const disposeTools = installScopedTools(ctx, this.service);
 		ctx.effect(() => {

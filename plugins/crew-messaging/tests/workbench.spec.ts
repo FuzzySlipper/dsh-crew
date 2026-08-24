@@ -103,6 +103,69 @@ describe('foreign session workbench controller', () => {
     ])
   })
 
+  it('loads browser-safe interaction questions only for a responding session', async () => {
+    const controller = new CrewSessionWorkbenchController({
+      listSessions: async () => ({ sessions: [{ ...session, capabilities: ['respond-interactions'] }] }), listEvents: async () => ({ events: [] }), stream: () => new FakeEventSource(),
+      interactions: async () => [{ id: 'request-1', sessionId: 'codex/one', kind: 'item/tool/requestUserInput', createdAt: 'now', status: 'pending', capability: 'respond-interactions', allowedDecisions: ['answer'], permissions: [], questions: [{ id: 'answer', header: 'Pick', question: 'Choose', sensitive: false, options: [{ label: 'yes', description: 'continue' }] }] }],
+    })
+    await controller.open()
+    expect(controller.getSnapshot().interactions[0]).toMatchObject({ id: 'request-1', questions: [{ id: 'answer', options: [{ label: 'yes' }] }] })
+    controller.dispose()
+  })
+
+  it('aborts a selected-session interaction refresh on close', async () => {
+    let aborted = false
+    const controller = new CrewSessionWorkbenchController({
+      listSessions: async () => ({ sessions: [{ ...session, capabilities: ['respond-interactions'] }] }), listEvents: async () => ({ events: [] }), stream: () => new FakeEventSource(),
+      interactions: async (_id, signal) => await new Promise<readonly never[]>(resolve => { signal.addEventListener('abort', () => { aborted = true; resolve([]) }) }),
+    })
+    const opening = controller.open()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    controller.close()
+    await opening
+    expect(aborted).toBe(true)
+    expect(controller.getSnapshot()).toMatchObject({ open: false, interactions: [] })
+  })
+
+  it('does not call controls when a caller bypasses hidden session capabilities', async () => {
+    let interrupts = 0; let responses = 0
+    const controller = new CrewSessionWorkbenchController({
+      listSessions: async () => ({ sessions: [session] }), listEvents: async () => ({ events: [] }), stream: () => new FakeEventSource(),
+      interrupt: async () => { interrupts += 1 }, respondInteraction: async () => { responses += 1 },
+    })
+    await controller.open()
+    const interaction = { id: 'i', sessionId: 'codex/one', kind: 'item/tool/requestUserInput', createdAt: 'now', status: 'pending' as const, capability: 'respond-interactions' as const, allowedDecisions: ['answer'], questions: [], permissions: [] }
+    await expect(controller.interrupt('turn')).resolves.toBe(false)
+    await expect(controller.respondInteraction(interaction, 'answer', { answers: {} })).resolves.toBe(false)
+    expect({ interrupts, responses }).toEqual({ interrupts: 0, responses: 0 })
+    controller.dispose()
+  })
+
+  it('does not create without the global create capability, but permits a capable caller', async () => {
+    let deniedCreates = 0
+    const denied = new CrewSessionWorkbenchController({
+      listSessions: async () => ({ sessions: [session] }), listEvents: async () => ({ events: [] }), stream: () => new FakeEventSource(),
+      create: async () => { deniedCreates += 1; return { sessionId: 'codex/new' } },
+    })
+    await denied.open()
+    expect(denied.canCreate()).toBe(false)
+    await expect(denied.create('/tmp/denied')).resolves.toBe(false)
+    expect(deniedCreates).toBe(0)
+    denied.dispose()
+
+    let allowedCreates = 0
+    const allowed = new CrewSessionWorkbenchController({
+      listSessions: async () => ({ sessions: [session] }), listEvents: async () => ({ events: [] }), stream: () => new FakeEventSource(),
+      controlCapabilities: async () => ['create-codex-session'],
+      create: async () => { allowedCreates += 1; return { sessionId: 'codex/new' } },
+    }, () => {}, () => 'stable-create')
+    await allowed.open()
+    expect(allowed.canCreate()).toBe(true)
+    await expect(allowed.create('/tmp/allowed')).resolves.toBe(true)
+    expect(allowedCreates).toBe(1)
+    allowed.dispose()
+  })
+
   it('normalizes raw upstream SSE fields without exposing private routing data', () => {
     expect(decodeCrewForeignSessionEvent(JSON.stringify({
       event_id: 'event-7', session_id: 'codex/one', sequence: 7, cursor: 7, event_type: 'assistant.message',

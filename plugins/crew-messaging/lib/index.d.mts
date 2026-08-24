@@ -27,6 +27,7 @@ interface CrewMessagingConfig {
   instanceId?: string;
   bindings?: BindingConfig[];
   workbenchAddress?: string;
+  codexControlUrl?: string;
   leaseDuration?: string;
   renewMs?: number;
   pollMs?: number;

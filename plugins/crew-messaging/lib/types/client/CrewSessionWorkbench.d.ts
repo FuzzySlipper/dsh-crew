@@ -4,6 +4,11 @@ export declare const CREW_SESSIONS_ENDPOINT = "/plugins/dsh-crew-messaging/sessi
 export declare const CREW_SESSION_EVENTS_ENDPOINT = "/plugins/dsh-crew-messaging/session-events";
 export declare const CREW_SESSION_EVENTS_STREAM_ENDPOINT = "/plugins/dsh-crew-messaging/session-events/stream";
 export declare const CREW_SESSION_PROMPT_ENDPOINT = "/plugins/dsh-crew-messaging/session-prompt";
+export declare const CREW_CODEX_CREATE_ENDPOINT = "/plugins/dsh-crew-messaging/codex/create";
+export declare const CREW_CODEX_INTERRUPT_ENDPOINT = "/plugins/dsh-crew-messaging/codex/interrupt";
+export declare const CREW_CODEX_INTERACTIONS_ENDPOINT = "/plugins/dsh-crew-messaging/codex/interactions";
+export declare const CREW_CODEX_RESPOND_ENDPOINT = "/plugins/dsh-crew-messaging/codex/respond";
+export declare const CREW_CODEX_CAPABILITIES_ENDPOINT = "/plugins/dsh-crew-messaging/codex/capabilities";
 export declare const CREW_SESSION_PROMPT_MAX_CHARS = 12000;
 /** Minimal EventSource face so controller tests do not need a browser transport. */
 export interface CrewEventSource {
@@ -19,6 +24,35 @@ export interface CrewSessionWorkbenchPort {
         readonly messageId: string;
         readonly replayed: boolean;
     }>;
+    controlCapabilities?(): Promise<readonly string[]>;
+    create?(cwd: string, operationId: string): Promise<{
+        readonly sessionId: string;
+    }>;
+    interrupt?(sessionId: string, turnId: string, operationId: string): Promise<void>;
+    interactions?(sessionId: string, signal: AbortSignal): Promise<readonly CrewPendingInteraction[]>;
+    respondInteraction?(sessionId: string, id: string, method: string, response: unknown): Promise<void>;
+}
+export interface CrewInteractionQuestion {
+    readonly id: string;
+    readonly header: string;
+    readonly question: string;
+    readonly sensitive: boolean;
+    readonly options: readonly {
+        readonly label: string;
+        readonly description: string;
+    }[];
+}
+export interface CrewPendingInteraction {
+    readonly id: string;
+    readonly sessionId: string;
+    readonly kind: string;
+    readonly prompt?: string;
+    readonly allowedDecisions: readonly string[];
+    readonly createdAt: string;
+    readonly status: 'pending';
+    readonly capability: 'respond-interactions';
+    readonly questions: readonly CrewInteractionQuestion[];
+    readonly permissions: readonly string[];
 }
 export type CrewSessionWorkbenchConnection = 'closed' | 'connecting' | 'open' | 'reconnecting' | 'error';
 /** Complete render state for the independent, read-only foreign-session workbench. */
@@ -33,6 +67,8 @@ export interface CrewSessionWorkbenchState {
     readonly error: string | undefined;
     readonly submitting: boolean;
     readonly submissionError: string | undefined;
+    readonly interactions: readonly CrewPendingInteraction[];
+    readonly controlCapabilities: readonly string[];
 }
 /**
  * Own selection fetches and one EventSource. Changing selection or disposing cancels both.
@@ -49,6 +85,11 @@ export declare class CrewSessionWorkbenchController {
     private selectionGeneration;
     private disposed;
     private pendingSubmission;
+    private pendingCreate;
+    private creating;
+    private interactionAbort;
+    private interactionTimer;
+    private interactionLoading;
     constructor(port: CrewSessionWorkbenchPort, report?: (error: unknown) => void, operationId?: () => string);
     /** @returns The immutable render snapshot. */
     getSnapshot(): CrewSessionWorkbenchState;
@@ -68,6 +109,14 @@ export declare class CrewSessionWorkbenchController {
     submit(text: string): Promise<boolean>;
     /** Whether the selected public runtime session advertises queued prompt delivery. */
     canPrompt(sessionId: string): boolean;
+    canInterrupt(sessionId: string): boolean;
+    canRespond(sessionId: string): boolean;
+    canCreate(): boolean;
+    create(cwd: string): Promise<boolean>;
+    interrupt(turnId: string): Promise<boolean>;
+    respondInteraction(interaction: CrewPendingInteraction, decision: string, responseOverride?: unknown): Promise<boolean>;
+    private reloadInteractions;
+    private scheduleInteractions;
     private openStream;
     private stopSelection;
     private patch;
