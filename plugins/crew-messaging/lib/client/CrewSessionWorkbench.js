@@ -2,8 +2,10 @@
 export const CREW_SESSIONS_ENDPOINT = '/plugins/dsh-crew-messaging/sessions';
 export const CREW_SESSION_EVENTS_ENDPOINT = '/plugins/dsh-crew-messaging/session-events';
 export const CREW_SESSION_EVENTS_STREAM_ENDPOINT = '/plugins/dsh-crew-messaging/session-events/stream';
+export const CREW_SESSION_PROMPT_ENDPOINT = '/plugins/dsh-crew-messaging/session-prompt';
+export const CREW_SESSION_PROMPT_MAX_CHARS = 12_000;
 const INITIAL = {
-    open: false, loading: false, sessions: [], selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined,
+    open: false, loading: false, sessions: [], selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined, submitting: false, submissionError: undefined,
 };
 /**
  * Own selection fetches and one EventSource. Changing selection or disposing cancels both.
@@ -11,6 +13,7 @@ const INITIAL = {
 export class CrewSessionWorkbenchController {
     port;
     report;
+    operationId;
     state = INITIAL;
     listeners = new Set();
     source;
@@ -18,9 +21,11 @@ export class CrewSessionWorkbenchController {
     eventsAbort;
     selectionGeneration = 0;
     disposed = false;
-    constructor(port, report = () => { }) {
+    pendingSubmission;
+    constructor(port, report = () => { }, operationId = () => crypto.randomUUID()) {
         this.port = port;
         this.report = report;
+        this.operationId = operationId;
     }
     /** @returns The immutable render snapshot. */
     getSnapshot() { return this.state; }
@@ -35,7 +40,7 @@ export class CrewSessionWorkbenchController {
         this.listAbort = undefined;
         this.selectionGeneration += 1;
         this.stopSelection();
-        this.patch({ open: false, loading: false, selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined });
+        this.patch({ open: false, loading: false, selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined, submitting: false, submissionError: undefined });
     }
     /** Dispose the controller when the DSH client plugin fiber unloads. */
     dispose() { if (this.disposed)
@@ -96,6 +101,37 @@ export class CrewSessionWorkbenchController {
             this.patch({ connection: 'error', error: message(error) });
         }
     }
+    /** Submit one ordinary fabric prompt to the selected runtime-capable session. */
+    async submit(text) {
+        const sessionId = this.state.selectedSessionId;
+        if (this.disposed || !this.state.open || this.state.submitting || this.port.submit === undefined || sessionId === undefined || !this.canPrompt(sessionId) || text.trim() === '')
+            return false;
+        if (text.length > CREW_SESSION_PROMPT_MAX_CHARS) {
+            this.patch({ submissionError: 'Prompt must be 12,000 characters or fewer' });
+            return false;
+        }
+        const pending = this.pendingSubmission?.sessionId === sessionId && this.pendingSubmission.text === text
+            ? this.pendingSubmission
+            : { sessionId, text, operationId: this.operationId() };
+        this.pendingSubmission = pending;
+        this.patch({ submitting: true, submissionError: undefined });
+        try {
+            await this.port.submit(pending.sessionId, pending.text, pending.operationId);
+            if (!this.disposed)
+                this.patch({ submitting: false, submissionError: undefined });
+            this.pendingSubmission = undefined;
+            return true;
+        }
+        catch (error) {
+            if (!this.disposed) {
+                this.report(error);
+                this.patch({ submitting: false, submissionError: message(error) });
+            }
+            return false;
+        }
+    }
+    /** Whether the selected public runtime session advertises queued prompt delivery. */
+    canPrompt(sessionId) { return this.state.sessions.some(session => session.sessionId === sessionId && session.capabilities.includes('queued-prompt-delivery')); }
     openStream(sessionId, cursor, generation) {
         const source = this.port.stream(sessionId, cursor);
         this.source = source;
@@ -132,6 +168,7 @@ export function createCrewSessionWorkbenchPort(input = {}) {
         listSessions: async (signal) => decodeSnapshot(await fetchJson(request, CREW_SESSIONS_ENDPOINT, signal), decodeSessions),
         listEvents: async (sessionId, cursor, signal) => decodeSnapshot(await fetchJson(request, `${CREW_SESSION_EVENTS_ENDPOINT}?${new URLSearchParams({ session_id: sessionId, cursor: String(cursor) })}`, signal), decodeEvents),
         stream: (sessionId, cursor) => eventSource(`${CREW_SESSION_EVENTS_STREAM_ENDPOINT}?${new URLSearchParams({ session_id: sessionId, cursor: String(cursor) })}`),
+        submit: async (sessionId, text, operationId) => decodeSubmission(await fetchJson(request, CREW_SESSION_PROMPT_ENDPOINT, undefined, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: sessionId, text, operation_id: operationId }) })),
     };
 }
 /** Parse one named SSE data item and discard malformed or private upstream data. */
@@ -163,14 +200,22 @@ export function decodeEvents(value) {
     const events = record.events.map(decodeEvent);
     return events.some(event => event === undefined) ? undefined : { events: events };
 }
-async function fetchJson(request, url, signal) {
-    const response = await request(url, { cache: 'no-store', signal });
+async function fetchJson(request, url, signal, init = {}) {
+    const response = await request(url, { cache: 'no-store', ...init, ...(signal === undefined ? {} : { signal }) });
     if (!response.ok)
         throw new Error(`request failed (${String(response.status)})`);
     return await response.json();
 }
 function decodeSnapshot(value, decoder) { const decoded = decoder(value); if (decoded === undefined)
     throw new Error('received an invalid Crew session response'); return decoded; }
+function decodeSubmission(value) {
+    const record = object(value);
+    const messageId = text(record?.messageId);
+    const replayed = record?.replayed;
+    if (messageId === undefined || typeof replayed !== 'boolean')
+        throw new Error('received an invalid Crew prompt response');
+    return { messageId, replayed };
+}
 function decodeSession(value) {
     const record = object(value);
     const sessionId = text(record?.sessionId);

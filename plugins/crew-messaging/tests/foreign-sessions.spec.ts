@@ -3,7 +3,7 @@ import { PassThrough } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { describe, expect, it } from 'vitest'
 import {
-  CREW_SESSION_EVENTS_STREAM_PATH, crewForeignSessionEventsSnapshot, crewForeignSessionEventsStreamHandler, crewForeignSessionsHandler, crewForeignSessionsSnapshot,
+  CREW_SESSION_EVENTS_STREAM_PATH, CREW_SESSION_PROMPT_PATH, crewForeignSessionEventsSnapshot, crewForeignSessionEventsStreamHandler, crewForeignSessionPromptHandler, crewForeignSessionsHandler, crewForeignSessionsSnapshot,
 } from '../src/dashboard/foreign-sessions.ts'
 
 const session = {
@@ -42,6 +42,32 @@ describe('foreign session host projections', () => {
     const response = { writeHead: (...args: unknown[]) => { writes.push(args) }, end: () => {} }
     await crewForeignSessionsHandler({ fabricUrl: 'http://127.0.0.1:8787' })({ method: 'POST' } as IncomingMessage, response as unknown as ServerResponse)
     expect(writes).toEqual([[405, { allow: 'GET' }]])
+  })
+
+  it('submits a same-origin workbench prompt without exposing the provider lease', async () => {
+    const calls: Array<{ readonly sessionId: string; readonly operationId: string; readonly text: string }> = []
+    const request = new PassThrough() as PassThrough & IncomingMessage
+    Object.assign(request, { method: 'POST', url: CREW_SESSION_PROMPT_PATH })
+    request.end(JSON.stringify({ session_id: 'codex/one', operation_id: 'click-1', text: 'review this' }))
+    const writes: unknown[][] = []; let body = ''
+    const response = { writeHead: (...args: unknown[]) => { writes.push(args) }, end: (value?: string) => { body = value ?? '' } }
+    await crewForeignSessionPromptHandler({ adapter: { sendWorkbench: async (sessionId, operationId, text) => { calls.push({ sessionId, operationId, text }); return { messageId: 'm1', replayed: false } } } })(request, response as unknown as ServerResponse)
+    expect(calls).toEqual([{ sessionId: 'codex/one', operationId: 'click-1', text: 'review this' }])
+    expect(writes).toEqual([[200, expect.objectContaining({ 'content-type': 'application/json; charset=utf-8' })]])
+    expect(JSON.parse(body)).toEqual({ messageId: 'm1', replayed: false })
+  })
+
+  it('bounds a workbench request before it reaches the provider', async () => {
+    let sent = false
+    const request = new PassThrough() as PassThrough & IncomingMessage
+    Object.assign(request, { method: 'POST', url: CREW_SESSION_PROMPT_PATH })
+    request.end(JSON.stringify({ session_id: 'codex/one', operation_id: 'click-1', text: 'x'.repeat(21 * 1024) }))
+    const writes: unknown[][] = []; let body = ''
+    const response = { writeHead: (...args: unknown[]) => { writes.push(args) }, end: (value?: string) => { body = value ?? '' } }
+    await crewForeignSessionPromptHandler({ adapter: { sendWorkbench: async () => { sent = true; return { messageId: 'm1', replayed: false } } } })(request, response as unknown as ServerResponse)
+    expect(sent).toBe(false)
+    expect(writes[0]?.[0]).toBe(400)
+    expect(JSON.parse(body)).toMatchObject({ error: 'Crew prompt request must be 20 KiB or smaller' })
   })
 
   it('keeps the SSE upstream body streaming, carries Last-Event-ID, and aborts on browser close', async () => {

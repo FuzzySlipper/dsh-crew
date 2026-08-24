@@ -81,6 +81,28 @@ describe('foreign session workbench controller', () => {
     expect(decodeCrewForeignSessionEvent({ eventId: 'missing' })).toBeUndefined()
   })
 
+  it('keeps one operation identity across a failed workbench prompt retry', async () => {
+    const submissions: Array<{ readonly sessionId: string; readonly text: string; readonly operationId: string }> = []
+    let attempts = 0
+    const controller = new CrewSessionWorkbenchController({
+      listSessions: async () => ({ sessions: [{ ...session, capabilities: ['queued-prompt-delivery'] }] }),
+      listEvents: async () => ({ events: [] }), stream: () => new FakeEventSource(),
+      submit: async (sessionId, text, operationId) => {
+        submissions.push({ sessionId, text, operationId }); attempts += 1
+        if (attempts === 1) throw new Error('temporary fabric failure')
+        return { messageId: 'm1', replayed: true }
+      },
+    }, () => {}, () => 'stable-click')
+    await controller.open()
+    await expect(controller.submit('review this')).resolves.toBe(false)
+    expect(controller.getSnapshot()).toMatchObject({ submitting: false, submissionError: 'temporary fabric failure' })
+    await expect(controller.submit('review this')).resolves.toBe(true)
+    expect(submissions).toEqual([
+      { sessionId: 'codex/one', text: 'review this', operationId: 'stable-click' },
+      { sessionId: 'codex/one', text: 'review this', operationId: 'stable-click' },
+    ])
+  })
+
   it('normalizes raw upstream SSE fields without exposing private routing data', () => {
     expect(decodeCrewForeignSessionEvent(JSON.stringify({
       event_id: 'event-7', session_id: 'codex/one', sequence: 7, cursor: 7, event_type: 'assistant.message',

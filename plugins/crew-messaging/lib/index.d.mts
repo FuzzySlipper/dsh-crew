@@ -26,6 +26,7 @@ interface CrewMessagingConfig {
   adapterId?: string;
   instanceId?: string;
   bindings?: BindingConfig[];
+  workbenchAddress?: string;
   leaseDuration?: string;
   renewMs?: number;
   pollMs?: number;
@@ -78,6 +79,11 @@ declare class CrewMessagingProvider extends Service {
   status(): CrewMessagingStatus;
   /** Refresh subscription emitted after the directory map is coherent. */
   onDirectoryChanged(listener: () => void): () => void;
+  /** Submit a browser workbench prompt through this provider's held fabric lease. */
+  sendWorkbench(sessionId: string, operationId: string, text: string): Promise<{
+    messageId: string;
+    replayed: boolean;
+  }>;
 }
 /** Fold only durable explicit renames; automatic names never become fabric addresses. */
 declare function explicitUserTitle(events: readonly SessionEvent[]): string | undefined;

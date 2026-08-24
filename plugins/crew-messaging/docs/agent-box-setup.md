@@ -8,11 +8,12 @@ Start the sibling fabric first, following [the crew-services agent-box runbook](
 export DSH_CREW_MESSAGING_URL=http://127.0.0.1:8787
 export DSH_CREW_MESSAGING_ADAPTER_ID=dsh-crew-messaging
 export DSH_CREW_MESSAGING_INSTANCE_ID="$(hostname)-dsh-crew"
+export DSH_CREW_MESSAGING_WORKBENCH_ADDRESS=dsh/workbench
 export DSH_CREW_MESSAGING_BINDINGS='[{"address":"alpha","sessionId":"<root-session-id-a>"},{"address":"beta","sessionId":"<root-session-id-b>"}]'
 
 ```
 
-Changing this variable or the installed client bundle requires a `dsh-web.service` restart. The read-only directory, traffic, and runtime view is available at **Settings → Crew** after the restart. Historical fabric rows, including intentionally retained `outcome_unknown` records, are ledger history rather than currently pending deliveries.
+Changing this variable or the installed client bundle requires a `dsh-web.service` restart. The directory, traffic, and runtime view is available at **Settings → Crew** after the restart. Historical fabric rows, including intentionally retained `outcome_unknown` records, are ledger history rather than currently pending deliveries.
 
 Build the local bundle and install it into the existing web profile. The plugin command applies the bundle patch; do not apply `cordis.patch.yml` manually.
 
@@ -42,6 +43,7 @@ Put the adapter values in `/home/agent/.config/dsh/crew-messaging.env`:
 DSH_CREW_MESSAGING_URL=http://127.0.0.1:8787
 DSH_CREW_MESSAGING_ADAPTER_ID=dsh-crew-messaging
 DSH_CREW_MESSAGING_INSTANCE_ID=agent-box-web
+DSH_CREW_MESSAGING_WORKBENCH_ADDRESS=dsh/workbench
 DSH_CREW_MESSAGING_BINDINGS='[{"address":"alpha","sessionId":"<root-session-id-a>"},{"address":"beta","sessionId":"<root-session-id-b>"}]'
 ```
 

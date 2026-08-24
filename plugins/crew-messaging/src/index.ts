@@ -16,8 +16,8 @@ import { frameCrewDelivery } from './framing.ts'
 import { installScopedTools } from './tools.ts'
 import { CREW_DASHBOARD_PATH, crewDashboardHandler, dashboardTuning } from './dashboard/host.ts'
 import {
-  CREW_SESSION_EVENTS_PATH, CREW_SESSION_EVENTS_STREAM_PATH, CREW_SESSIONS_PATH,
-  crewForeignSessionEventsHandler, crewForeignSessionEventsStreamHandler, crewForeignSessionsHandler,
+  CREW_SESSION_EVENTS_PATH, CREW_SESSION_EVENTS_STREAM_PATH, CREW_SESSION_PROMPT_PATH, CREW_SESSIONS_PATH,
+  crewForeignSessionEventsHandler, crewForeignSessionEventsStreamHandler, crewForeignSessionPromptHandler, crewForeignSessionsHandler,
 } from './dashboard/foreign-sessions.ts'
 
 interface WebRouteHost { register(route: { kind: 'exact'; path: string; handler: (request: import('node:http').IncomingMessage, response: import('node:http').ServerResponse) => void | Promise<void> }): () => void }
@@ -53,12 +53,14 @@ export class CrewMessagingProvider extends Service {
     const sessions = crewForeignSessionsHandler({ fabricUrl })
     const events = crewForeignSessionEventsHandler({ fabricUrl })
     const stream = crewForeignSessionEventsStreamHandler({ fabricUrl })
+    const prompt = crewForeignSessionPromptHandler({ adapter: this.service })
     ctx.inject(['webServer'], webCtx => {
       const webServer = webCtx.get('webServer') as WebRouteHost
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_DASHBOARD_PATH, handler: dashboard }), 'crew-messaging: dashboard route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_SESSIONS_PATH, handler: sessions }), 'crew-messaging: foreign sessions route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_SESSION_EVENTS_PATH, handler: events }), 'crew-messaging: foreign session events route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_SESSION_EVENTS_STREAM_PATH, handler: stream }), 'crew-messaging: foreign session event stream route')
+      webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_SESSION_PROMPT_PATH, handler: prompt }), 'crew-messaging: foreign session prompt route')
     })
     const disposeTools = installScopedTools(ctx, this.service)
     ctx.effect(() => {
@@ -73,6 +75,8 @@ export class CrewMessagingProvider extends Service {
   status(): CrewMessagingStatus { return this.service.status() }
   /** Refresh subscription emitted after the directory map is coherent. */
   onDirectoryChanged(listener: () => void): () => void { return this.service.onDirectoryChanged(listener) }
+  /** Submit a browser workbench prompt through this provider's held fabric lease. */
+  sendWorkbench(sessionId: string, operationId: string, text: string): Promise<{ messageId: string; replayed: boolean }> { return this.service.sendWorkbench(sessionId, operationId, text) }
 }
 
 class DshRuntime implements AddressDiscovery {

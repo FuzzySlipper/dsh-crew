@@ -276,6 +276,8 @@ window.__ModuleLoader__.load({
 		const CREW_SESSIONS_ENDPOINT = "/plugins/dsh-crew-messaging/sessions";
 		const CREW_SESSION_EVENTS_ENDPOINT = "/plugins/dsh-crew-messaging/session-events";
 		const CREW_SESSION_EVENTS_STREAM_ENDPOINT = "/plugins/dsh-crew-messaging/session-events/stream";
+		const CREW_SESSION_PROMPT_ENDPOINT = "/plugins/dsh-crew-messaging/session-prompt";
+		const CREW_SESSION_PROMPT_MAX_CHARS = 12e3;
 		const INITIAL = {
 			open: false,
 			loading: false,
@@ -284,7 +286,9 @@ window.__ModuleLoader__.load({
 			events: [],
 			cursor: 0,
 			connection: "closed",
-			error: void 0
+			error: void 0,
+			submitting: false,
+			submissionError: void 0
 		};
 		/**
 		* Own selection fetches and one EventSource. Changing selection or disposing cancels both.
@@ -292,6 +296,7 @@ window.__ModuleLoader__.load({
 		var CrewSessionWorkbenchController = class {
 			port;
 			report;
+			operationId;
 			state = INITIAL;
 			listeners = /* @__PURE__ */ new Set();
 			source;
@@ -299,9 +304,11 @@ window.__ModuleLoader__.load({
 			eventsAbort;
 			selectionGeneration = 0;
 			disposed = false;
-			constructor(port, report = () => {}) {
+			pendingSubmission;
+			constructor(port, report = () => {}, operationId = () => crypto.randomUUID()) {
 				this.port = port;
 				this.report = report;
+				this.operationId = operationId;
 			}
 			/** @returns The immutable render snapshot. */
 			getSnapshot() {
@@ -333,7 +340,9 @@ window.__ModuleLoader__.load({
 					events: [],
 					cursor: 0,
 					connection: "closed",
-					error: void 0
+					error: void 0,
+					submitting: false,
+					submissionError: void 0
 				});
 			}
 			/** Dispose the controller when the DSH client plugin fiber unloads. */
@@ -417,6 +426,47 @@ window.__ModuleLoader__.load({
 					});
 				}
 			}
+			/** Submit one ordinary fabric prompt to the selected runtime-capable session. */
+			async submit(text) {
+				const sessionId = this.state.selectedSessionId;
+				if (this.disposed || !this.state.open || this.state.submitting || this.port.submit === void 0 || sessionId === void 0 || !this.canPrompt(sessionId) || text.trim() === "") return false;
+				if (text.length > 12e3) {
+					this.patch({ submissionError: "Prompt must be 12,000 characters or fewer" });
+					return false;
+				}
+				const pending = this.pendingSubmission?.sessionId === sessionId && this.pendingSubmission.text === text ? this.pendingSubmission : {
+					sessionId,
+					text,
+					operationId: this.operationId()
+				};
+				this.pendingSubmission = pending;
+				this.patch({
+					submitting: true,
+					submissionError: void 0
+				});
+				try {
+					await this.port.submit(pending.sessionId, pending.text, pending.operationId);
+					if (!this.disposed) this.patch({
+						submitting: false,
+						submissionError: void 0
+					});
+					this.pendingSubmission = void 0;
+					return true;
+				} catch (error) {
+					if (!this.disposed) {
+						this.report(error);
+						this.patch({
+							submitting: false,
+							submissionError: message(error)
+						});
+					}
+					return false;
+				}
+			}
+			/** Whether the selected public runtime session advertises queued prompt delivery. */
+			canPrompt(sessionId) {
+				return this.state.sessions.some((session) => session.sessionId === sessionId && session.capabilities.includes("queued-prompt-delivery"));
+			}
 			openStream(sessionId, cursor, generation) {
 				const source = this.port.stream(sessionId, cursor);
 				this.source = source;
@@ -467,7 +517,16 @@ window.__ModuleLoader__.load({
 				stream: (sessionId, cursor) => eventSource(`${CREW_SESSION_EVENTS_STREAM_ENDPOINT}?${new URLSearchParams({
 					session_id: sessionId,
 					cursor: String(cursor)
-				})}`)
+				})}`),
+				submit: async (sessionId, text, operationId) => decodeSubmission(await fetchJson(request, CREW_SESSION_PROMPT_ENDPOINT, void 0, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						session_id: sessionId,
+						text,
+						operation_id: operationId
+					})
+				}))
 			};
 		}
 		/** Parse one named SSE data item and discard malformed or private upstream data. */
@@ -494,10 +553,11 @@ window.__ModuleLoader__.load({
 			const events = record.events.map(decodeEvent);
 			return events.some((event) => event === void 0) ? void 0 : { events };
 		}
-		async function fetchJson(request, url, signal) {
+		async function fetchJson(request, url, signal, init = {}) {
 			const response = await request(url, {
 				cache: "no-store",
-				signal
+				...init,
+				...signal === void 0 ? {} : { signal }
 			});
 			if (!response.ok) throw new Error(`request failed (${String(response.status)})`);
 			return await response.json();
@@ -506,6 +566,16 @@ window.__ModuleLoader__.load({
 			const decoded = decoder(value);
 			if (decoded === void 0) throw new Error("received an invalid Crew session response");
 			return decoded;
+		}
+		function decodeSubmission(value) {
+			const record = object(value);
+			const messageId = text(record?.messageId);
+			const replayed = record?.replayed;
+			if (messageId === void 0 || typeof replayed !== "boolean") throw new Error("received an invalid Crew prompt response");
+			return {
+				messageId,
+				replayed
+			};
 		}
 		function decodeSession(value) {
 			const record = object(value);
@@ -602,6 +672,7 @@ window.__ModuleLoader__.load({
 .dshCrewSessionsOverlay{position:fixed;inset:0;z-index:2147483001;display:flex;justify-content:flex-end;pointer-events:none}.dshCrewSessionsDrawer{box-sizing:border-box;width:min(920px,calc(100vw - 80px));height:100%;overflow:hidden;pointer-events:auto;border-left:1px solid var(--dsw-alias-border-l2);padding:20px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);box-shadow:var(--dsw-shadow-lv3)}
 .dshCrewSessionsHeader,.dshCrewSessionsToolbar{display:flex;align-items:center;justify-content:space-between;gap:12px}.dshCrewSessionsHeader h2,.dshCrewSessionsHeader p,.dshCrewSessionsEmpty,.dshCrewSessionEvent p{margin:0}.dshCrewSessionsHeader p,.dshCrewSessionsMuted{color:var(--dsw-alias-label-secondary);font-size:13px}.dshCrewSessionsButton{min-height:32px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 10px;font:inherit;color:inherit;background:transparent;cursor:pointer}.dshCrewSessionsButton:hover,.dshCrewSessionsButton:focus-visible,.dshCrewSessionList button:hover,.dshCrewSessionList button:focus-visible{background:var(--dsw-alias-interactive-bg-hover)}
 .dshCrewSessionsGrid{display:grid;grid-template-columns:minmax(220px,300px) minmax(0,1fr);gap:16px;height:calc(100% - 74px);margin-top:18px}.dshCrewSessionList,.dshCrewSessionTimeline{min-height:0;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1)}.dshCrewSessionList{overflow:auto;padding:8px}.dshCrewSessionList button{display:grid;width:100%;gap:4px;border:0;border-radius:7px;padding:10px;text-align:left;font:inherit;color:inherit;background:transparent;cursor:pointer}.dshCrewSessionList button[aria-current=true]{background:var(--dsw-alias-interactive-bg-hover)}.dshCrewSessionList small{color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}.dshCrewSessionTimeline{display:grid;grid-template-rows:auto minmax(0,1fr);overflow:hidden}.dshCrewSessionsToolbar{padding:12px;border-bottom:1px solid var(--dsw-alias-border-l2)}.dshCrewSessionEvents{display:grid;align-content:start;gap:10px;overflow:auto;padding:12px}.dshCrewSessionEvent{display:grid;gap:7px;border-left:2px solid var(--dsw-alias-brand-primary);padding:0 0 0 10px}.dshCrewSessionEvent header{display:flex;justify-content:space-between;gap:12px;font-size:13px}.dshCrewSessionEvent time,.dshCrewSessionEvent small{color:var(--dsw-alias-label-secondary);font-size:12px}.dshCrewSessionEvent pre{max-height:240px;overflow:auto;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-label-secondary)}.dshCrewSessionsState{border-radius:999px;padding:2px 8px;font-size:12px;background:var(--dsw-alias-bg-module-platform)}.dshCrewSessionsState[data-state=error]{color:var(--dsw-alias-state-error-primary)}
+.dshCrewSessionTimeline{grid-template-rows:auto auto minmax(0,1fr)}.dshCrewSessionPrompt{display:grid;gap:7px;padding:12px;border-bottom:1px solid var(--dsw-alias-border-l2)}.dshCrewSessionPrompt label{font-size:13px;font-weight:600}.dshCrewSessionPrompt textarea{box-sizing:border-box;width:100%;min-height:72px;resize:vertical;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;padding:8px;font:inherit;color:inherit;background:var(--dsw-alias-bg-layer-2)}.dshCrewSessionPrompt>div{display:flex;align-items:center;gap:8px}.dshCrewSessionsError{color:var(--dsw-alias-state-error-primary);font-size:12px}
 @media(max-width:720px){.dshCrewSessionsDrawer{width:100%;padding:16px}.dshCrewSessionsGrid{grid-template-columns:1fr;grid-template-rows:minmax(150px,35%) minmax(0,1fr);height:calc(100% - 84px)}}
 `;
 		/** Install one owned style node for the current client plugin fiber. */
@@ -617,7 +688,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region lib/client/CrewSessionWorkbenchView.js
-		/** React views for the additive read-only foreign-session drawer. */
+		/** React views for the additive foreign-session drawer. */
 		const returnTargets = /* @__PURE__ */ new WeakMap();
 		/** Render the Crew sessions action in the DSH sidebar footer. */
 		function CrewSessionWorkbenchTrigger({ wide, controller }) {
@@ -674,7 +745,7 @@ window.__ModuleLoader__.load({
 						children: [(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("h2", {
 							id: "dsh-crew-sessions-title",
 							children: "Crew sessions"
-						}), (0, react_jsx_runtime.jsx)("p", { children: "Read-only sessions published by external runtime adapters." })] }), (0, react_jsx_runtime.jsx)("button", {
+						}), (0, react_jsx_runtime.jsx)("p", { children: "Sessions published by external runtime adapters." })] }), (0, react_jsx_runtime.jsx)("button", {
 							ref: closeButton,
 							type: "button",
 							className: "dshCrewSessionsButton",
@@ -708,47 +779,95 @@ window.__ModuleLoader__.load({
 						}), (0, react_jsx_runtime.jsxs)("section", {
 							className: "dshCrewSessionTimeline",
 							"aria-live": "polite",
-							children: [(0, react_jsx_runtime.jsxs)("header", {
-								className: "dshCrewSessionsToolbar",
-								children: [(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("strong", { children: selected?.label ?? "Select a session" }), (0, react_jsx_runtime.jsx)("div", {
-									className: "dshCrewSessionsMuted",
-									children: selected === void 0 ? "No session selected" : selected.capabilities.join(", ") || "No published capabilities"
-								})] }), (0, react_jsx_runtime.jsxs)("div", { children: [
-									(0, react_jsx_runtime.jsx)("span", {
-										className: "dshCrewSessionsState",
-										"data-state": state.connection,
-										children: state.connection
-									}),
-									" ",
-									(0, react_jsx_runtime.jsx)("button", {
-										type: "button",
-										className: "dshCrewSessionsButton",
-										onClick: () => {
-											controller.refresh();
-										},
-										children: "Refresh"
-									})
-								] })]
-							}), (0, react_jsx_runtime.jsxs)("div", {
-								className: "dshCrewSessionEvents",
-								children: [state.error === void 0 ? null : (0, react_jsx_runtime.jsx)("p", {
-									className: "dshCrewSessionsEmpty",
-									role: "status",
-									children: state.error
-								}), selected === void 0 ? (0, react_jsx_runtime.jsx)("p", {
-									className: "dshCrewSessionsEmpty",
-									children: "Choose a published session to inspect its timeline."
-								}) : state.events.length === 0 && state.connection === "connecting" ? (0, react_jsx_runtime.jsx)("p", {
-									className: "dshCrewSessionsEmpty",
-									children: "Loading event history…"
-								}) : state.events.length === 0 ? (0, react_jsx_runtime.jsx)("p", {
-									className: "dshCrewSessionsEmpty",
-									children: "No events have been published for this session."
-								}) : state.events.map((event) => (0, react_jsx_runtime.jsx)(EventRow, { event }, event.cursor))]
-							})]
+							children: [
+								(0, react_jsx_runtime.jsxs)("header", {
+									className: "dshCrewSessionsToolbar",
+									children: [(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("strong", { children: selected?.label ?? "Select a session" }), (0, react_jsx_runtime.jsx)("div", {
+										className: "dshCrewSessionsMuted",
+										children: selected === void 0 ? "No session selected" : selected.capabilities.join(", ") || "No published capabilities"
+									})] }), (0, react_jsx_runtime.jsxs)("div", { children: [
+										(0, react_jsx_runtime.jsx)("span", {
+											className: "dshCrewSessionsState",
+											"data-state": state.connection,
+											children: state.connection
+										}),
+										" ",
+										(0, react_jsx_runtime.jsx)("button", {
+											type: "button",
+											className: "dshCrewSessionsButton",
+											onClick: () => {
+												controller.refresh();
+											},
+											children: "Refresh"
+										})
+									] })]
+								}),
+								(0, react_jsx_runtime.jsx)(CrewPrompt, {
+									controller,
+									enabled: selected !== void 0 && controller.canPrompt(selected.sessionId)
+								}),
+								(0, react_jsx_runtime.jsxs)("div", {
+									className: "dshCrewSessionEvents",
+									children: [state.error === void 0 ? null : (0, react_jsx_runtime.jsx)("p", {
+										className: "dshCrewSessionsEmpty",
+										role: "status",
+										children: state.error
+									}), selected === void 0 ? (0, react_jsx_runtime.jsx)("p", {
+										className: "dshCrewSessionsEmpty",
+										children: "Choose a published session to inspect its timeline."
+									}) : state.events.length === 0 && state.connection === "connecting" ? (0, react_jsx_runtime.jsx)("p", {
+										className: "dshCrewSessionsEmpty",
+										children: "Loading event history…"
+									}) : state.events.length === 0 ? (0, react_jsx_runtime.jsx)("p", {
+										className: "dshCrewSessionsEmpty",
+										children: "No events have been published for this session."
+									}) : state.events.map((event) => (0, react_jsx_runtime.jsx)(EventRow, { event }, event.cursor))]
+								})
+							]
 						})]
 					})]
 				})
+			});
+		}
+		function CrewPrompt({ controller, enabled }) {
+			const state = useStore(controller);
+			const [text, setText] = (0, react.useState)("");
+			if (!enabled) return (0, react_jsx_runtime.jsx)("p", {
+				className: "dshCrewSessionsMuted",
+				children: "This runtime publishes history only; it cannot accept workbench prompts."
+			});
+			const submit = async (event) => {
+				event.preventDefault();
+				if (await controller.submit(text)) setText("");
+			};
+			return (0, react_jsx_runtime.jsxs)("form", {
+				className: "dshCrewSessionPrompt",
+				onSubmit: (event) => {
+					submit(event);
+				},
+				children: [
+					(0, react_jsx_runtime.jsx)("label", {
+						htmlFor: "dsh-crew-session-prompt",
+						children: "Send a queued prompt"
+					}),
+					(0, react_jsx_runtime.jsx)("textarea", {
+						id: "dsh-crew-session-prompt",
+						maxLength: CREW_SESSION_PROMPT_MAX_CHARS,
+						value: text,
+						onChange: (event) => setText(event.target.value),
+						disabled: state.submitting
+					}),
+					(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("button", {
+						type: "submit",
+						className: "dshCrewSessionsButton",
+						disabled: state.submitting || text.trim() === "",
+						children: state.submitting ? "Submitting…" : "Queue prompt"
+					}), state.submissionError === void 0 ? null : (0, react_jsx_runtime.jsx)("span", {
+						className: "dshCrewSessionsError",
+						role: "status",
+						children: state.submissionError
+					})] })
+				]
 			});
 		}
 		function EventRow({ event }) {

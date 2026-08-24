@@ -8,13 +8,21 @@ import type { CrewForeignSession, CrewForeignSessionEvent, CrewForeignSessionEve
 export const CREW_SESSIONS_PATH = '/plugins/dsh-crew-messaging/sessions'
 export const CREW_SESSION_EVENTS_PATH = '/plugins/dsh-crew-messaging/session-events'
 export const CREW_SESSION_EVENTS_STREAM_PATH = '/plugins/dsh-crew-messaging/session-events/stream'
+export const CREW_SESSION_PROMPT_PATH = '/plugins/dsh-crew-messaging/session-prompt'
 
 /** Keep the shell workbench responsive even when an adapter has a long event history. */
 export const CREW_SESSION_LIST_LIMIT = 100
 export const CREW_SESSION_EVENT_LIMIT = 200
+export const CREW_SESSION_PROMPT_REQUEST_MAX_BYTES = 20 * 1024
+export const CREW_SESSION_PROMPT_TOO_LARGE = 'Crew prompt request must be 20 KiB or smaller'
 
 /** Testable local-fabric fetch surface. */
 export type ForeignSessionFetch = (input: URL, init?: RequestInit) => Promise<Response>
+
+/** Same-process authority for one browser workbench submission. */
+export interface CrewWorkbenchPromptAdapter {
+  sendWorkbench(sessionId: string, operationId: string, text: string): Promise<{ readonly messageId: string; readonly replayed: boolean }>
+}
 
 /** Build explicit browser fields from the service's public session response. */
 export async function crewForeignSessionsSnapshot(input: {
@@ -83,6 +91,22 @@ export function crewForeignSessionEventsHandler(input: { readonly fabricUrl: str
   }
 }
 
+/** Keep browser prompts same-origin while the provider retains its fabric lease. */
+export function crewForeignSessionPromptHandler(input: { readonly adapter: CrewWorkbenchPromptAdapter }): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
+  return async (request, response) => {
+    if (request.method !== 'POST') return methodNotAllowed(response, 'POST')
+    try {
+      const body = object(JSON.parse(await requestText(request, CREW_SESSION_PROMPT_REQUEST_MAX_BYTES)))
+      const sessionId = text(body?.session_id); const operationId = text(body?.operation_id); const prompt = text(body?.text)
+      if (sessionId === undefined || operationId === undefined || prompt === undefined) throw new Error('session_id, operation_id, and text are required')
+      const submitted = await input.adapter.sendWorkbench(sessionId, operationId, prompt)
+      respondJson(response, 200, { messageId: submitted.messageId, replayed: submitted.replayed })
+    } catch (error) {
+      respondJson(response, 400, { error: error instanceof Error ? error.message : 'Crew prompt submission failed' })
+    }
+  }
+}
+
 /**
  * Proxy the fabric SSE body without buffering it, so EventSource reconnects stay same-origin.
  *
@@ -143,7 +167,18 @@ function upstreamUrl(fabricUrl: string, path: string, query: Record<string, stri
   for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value))
   return url
 }
-function methodNotAllowed(response: ServerResponse): void { response.writeHead(405, { allow: 'GET' }); response.end() }
+function methodNotAllowed(response: ServerResponse, allow = 'GET'): void { response.writeHead(405, { allow }); response.end() }
+async function requestText(request: IncomingMessage, maxBytes = CREW_SESSION_PROMPT_REQUEST_MAX_BYTES): Promise<string> {
+  const chunks: Buffer[] = []
+  let bytes = 0
+  for await (const chunk of request) {
+    const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    bytes += value.length
+    if (bytes > maxBytes) throw new Error(CREW_SESSION_PROMPT_TOO_LARGE)
+    chunks.push(value)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
 function respondJson(response: ServerResponse, status: number, value: unknown): void { response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); response.end(JSON.stringify(value)) }
 function requiredQuery(request: IncomingMessage, name: string): string { const value = new URL(request.url ?? '/', 'http://localhost').searchParams.get(name)?.trim(); if (value === undefined || value === '') throw new Error(`${name} is required`); return value }
 function requestLimit(request: IncomingMessage, fallback: number): number { const value = new URL(request.url ?? '/', 'http://localhost').searchParams.get('limit'); if (value === null) return fallback; const parsed = Number(value); if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error('limit must be positive'); return Math.min(parsed, fallback) }

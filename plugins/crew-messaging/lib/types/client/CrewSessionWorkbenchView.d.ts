@@ -1,4 +1,4 @@
-/** React views for the additive read-only foreign-session drawer. */
+/** React views for the additive foreign-session drawer. */
 import { type ReactNode } from 'react';
 import { CrewSessionWorkbenchController } from './CrewSessionWorkbench.ts';
 type TriggerProps = {

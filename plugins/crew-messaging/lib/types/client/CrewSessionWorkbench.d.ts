@@ -3,16 +3,22 @@ import type { CrewForeignSession, CrewForeignSessionEvent, CrewForeignSessionEve
 export declare const CREW_SESSIONS_ENDPOINT = "/plugins/dsh-crew-messaging/sessions";
 export declare const CREW_SESSION_EVENTS_ENDPOINT = "/plugins/dsh-crew-messaging/session-events";
 export declare const CREW_SESSION_EVENTS_STREAM_ENDPOINT = "/plugins/dsh-crew-messaging/session-events/stream";
+export declare const CREW_SESSION_PROMPT_ENDPOINT = "/plugins/dsh-crew-messaging/session-prompt";
+export declare const CREW_SESSION_PROMPT_MAX_CHARS = 12000;
 /** Minimal EventSource face so controller tests do not need a browser transport. */
 export interface CrewEventSource {
     addEventListener(type: 'open' | 'error' | 'session_event', listener: EventListener): void;
     close(): void;
 }
-/** Closed read-only operations the workbench needs from the plugin-owned host routes. */
+/** Closed operations the workbench needs from the plugin-owned host routes. */
 export interface CrewSessionWorkbenchPort {
     listSessions(signal: AbortSignal): Promise<CrewForeignSessionsSnapshot>;
     listEvents(sessionId: string, cursor: number, signal: AbortSignal): Promise<CrewForeignSessionEventsSnapshot>;
     stream(sessionId: string, cursor: number): CrewEventSource;
+    submit?(sessionId: string, text: string, operationId: string): Promise<{
+        readonly messageId: string;
+        readonly replayed: boolean;
+    }>;
 }
 export type CrewSessionWorkbenchConnection = 'closed' | 'connecting' | 'open' | 'reconnecting' | 'error';
 /** Complete render state for the independent, read-only foreign-session workbench. */
@@ -25,6 +31,8 @@ export interface CrewSessionWorkbenchState {
     readonly cursor: number;
     readonly connection: CrewSessionWorkbenchConnection;
     readonly error: string | undefined;
+    readonly submitting: boolean;
+    readonly submissionError: string | undefined;
 }
 /**
  * Own selection fetches and one EventSource. Changing selection or disposing cancels both.
@@ -32,6 +40,7 @@ export interface CrewSessionWorkbenchState {
 export declare class CrewSessionWorkbenchController {
     private readonly port;
     private readonly report;
+    private readonly operationId;
     private state;
     private readonly listeners;
     private source;
@@ -39,7 +48,8 @@ export declare class CrewSessionWorkbenchController {
     private eventsAbort;
     private selectionGeneration;
     private disposed;
-    constructor(port: CrewSessionWorkbenchPort, report?: (error: unknown) => void);
+    private pendingSubmission;
+    constructor(port: CrewSessionWorkbenchPort, report?: (error: unknown) => void, operationId?: () => string);
     /** @returns The immutable render snapshot. */
     getSnapshot(): CrewSessionWorkbenchState;
     /** @param listener Callback after a state transition. @returns Subscription disposer. */
@@ -54,6 +64,10 @@ export declare class CrewSessionWorkbenchController {
     refresh(): Promise<void>;
     /** Select one known session, load its bounded history, then follow its stream. */
     select(sessionId: string): Promise<void>;
+    /** Submit one ordinary fabric prompt to the selected runtime-capable session. */
+    submit(text: string): Promise<boolean>;
+    /** Whether the selected public runtime session advertises queued prompt delivery. */
+    canPrompt(sessionId: string): boolean;
     private openStream;
     private stopSelection;
     private patch;

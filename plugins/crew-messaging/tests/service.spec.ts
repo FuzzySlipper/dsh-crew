@@ -19,7 +19,8 @@ class FakeFabric implements Fabric {
     this.bindWrites += 1
     const index = this.bindings.findIndex(item => item.address === address)
     const current = index === -1 ? undefined : this.bindings[index]
-    const next = { ...binding(address, String(body.target_ref), (current?.generation ?? 0) + 1), revision: (current?.revision ?? 0) + 1 }
+    const capabilities = Array.isArray(body.capabilities) && body.capabilities.every(value => typeof value === 'string') ? body.capabilities : ['deliver_when_idle', 'durable_next_turn', 'wake_inactive']
+    const next = { ...binding(address, String(body.target_ref), (current?.generation ?? 0) + 1), capabilities, revision: (current?.revision ?? 0) + 1 }
     if (index === -1) this.bindings.push(next); else this.bindings[index] = next
     return next
   }
@@ -76,6 +77,23 @@ describe('CrewMessagingService', () => {
     expect(fabric.submitted.map(body => body.sender_address)).toEqual(['alpha', 'beta'])
     expect(fabric.submitted[1]?.reply_to_message_id).toBe('m-original')
     expect(fabric.submitted[0]?.operation_id).toBe('s1:call-a'); await adapter.dispose()
+  })
+  it('submits a workbench prompt through its own bound sender only to a capable public session', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime()
+    fabric.bindings.push({ address: 'crew/codex', bound: true, adapter_id: 'crew-codex', target_ref: 'public-codex', capabilities: ['queued-prompt-delivery'], revision: 1, generation: 3 })
+    const adapter = new CrewMessagingService(fabric, runtime, { pollMs: 60_000 })
+    await expect(adapter.sendWorkbench('public-codex', 'click-1', 'review this')).resolves.toMatchObject({ messageId: 'out' })
+    expect(fabric.submitted.at(-1)).toMatchObject({ operation_id: 'workbench:click-1', sender_address: 'dsh/workbench', recipient_address: 'crew/codex', body: 'review this' })
+    await expect(adapter.sendWorkbench('alpha-session', 'click-2', 'nope')).rejects.toThrow('cannot accept workbench prompts')
+    await adapter.dispose()
+  })
+  it('bounds a workbench prompt before fabric submission', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime()
+    fabric.bindings.push({ address: 'crew/codex', bound: true, adapter_id: 'crew-codex', target_ref: 'public-codex', capabilities: ['queued-prompt-delivery'], revision: 1, generation: 3 })
+    const adapter = new CrewMessagingService(fabric, runtime, { pollMs: 60_000 })
+    await expect(adapter.sendWorkbench('public-codex', 'click-1', 'x'.repeat(16 * 1024 + 1))).rejects.toThrow('prompt must be 16 KiB or smaller')
+    expect(fabric.submitted).toHaveLength(0)
+    await adapter.dispose()
   })
   it('retries a transient initial fabric registration through the ordinary poll loop', async () => {
     vi.useFakeTimers()

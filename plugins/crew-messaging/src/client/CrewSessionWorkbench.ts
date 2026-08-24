@@ -5,6 +5,8 @@ import type { CrewForeignSession, CrewForeignSessionEvent, CrewForeignSessionEve
 export const CREW_SESSIONS_ENDPOINT = '/plugins/dsh-crew-messaging/sessions'
 export const CREW_SESSION_EVENTS_ENDPOINT = '/plugins/dsh-crew-messaging/session-events'
 export const CREW_SESSION_EVENTS_STREAM_ENDPOINT = '/plugins/dsh-crew-messaging/session-events/stream'
+export const CREW_SESSION_PROMPT_ENDPOINT = '/plugins/dsh-crew-messaging/session-prompt'
+export const CREW_SESSION_PROMPT_MAX_CHARS = 12_000
 
 /** Minimal EventSource face so controller tests do not need a browser transport. */
 export interface CrewEventSource {
@@ -12,11 +14,12 @@ export interface CrewEventSource {
   close(): void
 }
 
-/** Closed read-only operations the workbench needs from the plugin-owned host routes. */
+/** Closed operations the workbench needs from the plugin-owned host routes. */
 export interface CrewSessionWorkbenchPort {
   listSessions(signal: AbortSignal): Promise<CrewForeignSessionsSnapshot>
   listEvents(sessionId: string, cursor: number, signal: AbortSignal): Promise<CrewForeignSessionEventsSnapshot>
   stream(sessionId: string, cursor: number): CrewEventSource
+  submit?(sessionId: string, text: string, operationId: string): Promise<{ readonly messageId: string; readonly replayed: boolean }>
 }
 
 export type CrewSessionWorkbenchConnection = 'closed' | 'connecting' | 'open' | 'reconnecting' | 'error'
@@ -31,10 +34,12 @@ export interface CrewSessionWorkbenchState {
   readonly cursor: number
   readonly connection: CrewSessionWorkbenchConnection
   readonly error: string | undefined
+  readonly submitting: boolean
+  readonly submissionError: string | undefined
 }
 
 const INITIAL: CrewSessionWorkbenchState = {
-  open: false, loading: false, sessions: [], selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined,
+  open: false, loading: false, sessions: [], selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined, submitting: false, submissionError: undefined,
 }
 
 /**
@@ -48,8 +53,9 @@ export class CrewSessionWorkbenchController {
   private eventsAbort: AbortController | undefined
   private selectionGeneration = 0
   private disposed = false
+  private pendingSubmission: { readonly sessionId: string; readonly text: string; readonly operationId: string } | undefined
 
-  public constructor(private readonly port: CrewSessionWorkbenchPort, private readonly report: (error: unknown) => void = () => {}) {}
+  public constructor(private readonly port: CrewSessionWorkbenchPort, private readonly report: (error: unknown) => void = () => {}, private readonly operationId: () => string = () => crypto.randomUUID()) {}
 
   /** @returns The immutable render snapshot. */
   public getSnapshot(): CrewSessionWorkbenchState { return this.state }
@@ -62,7 +68,7 @@ export class CrewSessionWorkbenchController {
   public close(): void {
     this.listAbort?.abort(); this.listAbort = undefined
     this.selectionGeneration += 1; this.stopSelection()
-    this.patch({ open: false, loading: false, selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined })
+    this.patch({ open: false, loading: false, selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined, submitting: false, submissionError: undefined })
   }
   /** Dispose the controller when the DSH client plugin fiber unloads. */
   public dispose(): void { if (this.disposed) return; this.disposed = true; this.close(); this.listeners.clear() }
@@ -107,6 +113,33 @@ export class CrewSessionWorkbenchController {
     }
   }
 
+  /** Submit one ordinary fabric prompt to the selected runtime-capable session. */
+  public async submit(text: string): Promise<boolean> {
+    const sessionId = this.state.selectedSessionId
+    if (this.disposed || !this.state.open || this.state.submitting || this.port.submit === undefined || sessionId === undefined || !this.canPrompt(sessionId) || text.trim() === '') return false
+    if (text.length > CREW_SESSION_PROMPT_MAX_CHARS) {
+      this.patch({ submissionError: 'Prompt must be 12,000 characters or fewer' })
+      return false
+    }
+    const pending = this.pendingSubmission?.sessionId === sessionId && this.pendingSubmission.text === text
+      ? this.pendingSubmission
+      : { sessionId, text, operationId: this.operationId() }
+    this.pendingSubmission = pending
+    this.patch({ submitting: true, submissionError: undefined })
+    try {
+      await this.port.submit(pending.sessionId, pending.text, pending.operationId)
+      if (!this.disposed) this.patch({ submitting: false, submissionError: undefined })
+      this.pendingSubmission = undefined
+      return true
+    } catch (error) {
+      if (!this.disposed) { this.report(error); this.patch({ submitting: false, submissionError: message(error) }) }
+      return false
+    }
+  }
+
+  /** Whether the selected public runtime session advertises queued prompt delivery. */
+  public canPrompt(sessionId: string): boolean { return this.state.sessions.some(session => session.sessionId === sessionId && session.capabilities.includes('queued-prompt-delivery')) }
+
   private openStream(sessionId: string, cursor: number, generation: number): void {
     const source = this.port.stream(sessionId, cursor); this.source = source
     source.addEventListener('open', () => {
@@ -142,6 +175,7 @@ export function createCrewSessionWorkbenchPort(input: {
     listSessions: async signal => decodeSnapshot(await fetchJson(request, CREW_SESSIONS_ENDPOINT, signal), decodeSessions),
     listEvents: async (sessionId, cursor, signal) => decodeSnapshot(await fetchJson(request, `${CREW_SESSION_EVENTS_ENDPOINT}?${new URLSearchParams({ session_id: sessionId, cursor: String(cursor) })}`, signal), decodeEvents),
     stream: (sessionId, cursor) => eventSource(`${CREW_SESSION_EVENTS_STREAM_ENDPOINT}?${new URLSearchParams({ session_id: sessionId, cursor: String(cursor) })}`),
+    submit: async (sessionId, text, operationId) => decodeSubmission(await fetchJson(request, CREW_SESSION_PROMPT_ENDPOINT, undefined, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: sessionId, text, operation_id: operationId }) })),
   }
 }
 
@@ -163,12 +197,17 @@ export function decodeEvents(value: unknown): CrewForeignSessionEventsSnapshot |
   const events = record.events.map(decodeEvent); return events.some(event => event === undefined) ? undefined : { events: events as readonly CrewForeignSessionEvent[] }
 }
 
-async function fetchJson(request: typeof fetch, url: string, signal: AbortSignal): Promise<unknown> {
-  const response = await request(url, { cache: 'no-store', signal })
+async function fetchJson(request: typeof fetch, url: string, signal?: AbortSignal, init: RequestInit = {}): Promise<unknown> {
+  const response = await request(url, { cache: 'no-store', ...init, ...(signal === undefined ? {} : { signal }) })
   if (!response.ok) throw new Error(`request failed (${String(response.status)})`)
   return await response.json()
 }
 function decodeSnapshot<T>(value: unknown, decoder: (value: unknown) => T | undefined): T { const decoded = decoder(value); if (decoded === undefined) throw new Error('received an invalid Crew session response'); return decoded }
+function decodeSubmission(value: unknown): { readonly messageId: string; readonly replayed: boolean } {
+  const record = object(value); const messageId = text(record?.messageId); const replayed = record?.replayed
+  if (messageId === undefined || typeof replayed !== 'boolean') throw new Error('received an invalid Crew prompt response')
+  return { messageId, replayed }
+}
 function decodeSession(value: unknown): CrewForeignSession | undefined {
   const record = object(value); const sessionId = text(record?.sessionId); const adapterId = text(record?.adapterId); const label = text(record?.label); const status = text(record?.status)
   const revision = integer(record?.revision); const createdAt = text(record?.createdAt); const updatedAt = text(record?.updatedAt); const location = text(record?.location)

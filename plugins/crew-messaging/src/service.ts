@@ -9,6 +9,7 @@ export interface BindingConfig { address: string; sessionId: string }
 export interface CrewMessagingStatus { readonly initialized: boolean; readonly stopped: boolean; readonly connected: boolean; readonly leaseExpiresAt?: string }
 export interface CrewMessagingConfig {
   url?: string; adapterId?: string; instanceId?: string; bindings?: BindingConfig[]
+  workbenchAddress?: string
   leaseDuration?: string; renewMs?: number; pollMs?: number; claimDuration?: string; ttl?: string
   acceptanceTimeoutMs?: number; acceptancePollMs?: number
 }
@@ -42,7 +43,11 @@ export interface Fabric {
   deliveries(): Promise<{ deliveries: Delivery[] }>
 }
 
-const defaults = { adapterId: 'dsh-crew-messaging', instanceId: 'dsh-crew-messaging-local', leaseDuration: '2m', renewMs: 45_000, pollMs: 1_000, claimDuration: '45s', ttl: '24h', acceptanceTimeoutMs: 1_000, acceptancePollMs: 10 }
+const defaults = { adapterId: 'dsh-crew-messaging', instanceId: 'dsh-crew-messaging-local', workbenchAddress: 'dsh/workbench', leaseDuration: '2m', renewMs: 45_000, pollMs: 1_000, claimDuration: '45s', ttl: '24h', acceptanceTimeoutMs: 1_000, acceptancePollMs: 10 }
+const workbenchTarget = 'dsh-crew-workbench'
+const workbenchCapabilities = ['prompt-submit']
+export const CREW_WORKBENCH_PROMPT_MAX_BYTES = 16 * 1024
+export const CREW_WORKBENCH_PROMPT_TOO_LARGE = 'crew messaging: prompt must be 16 KiB or smaller'
 
 /** A leased FIFO pump that only delivers an immutable fabric envelope once DSH accepted it. */
 export class CrewMessagingService {
@@ -66,6 +71,8 @@ export class CrewMessagingService {
   constructor(private readonly fabric: Fabric, private readonly runtime: CrewRuntime, config: CrewMessagingConfig = {}, private readonly discovery?: AddressDiscovery) {
     this.config = { ...defaults, url: config.url ?? 'http://127.0.0.1:8787', bindings: config.bindings ?? [], ...config }
     validateBindings(this.config.bindings)
+    if (this.config.workbenchAddress.trim() === '') throw new Error('crew messaging: workbenchAddress is required')
+    if (this.config.bindings.some(binding => binding.address === this.config.workbenchAddress)) throw new Error(`crew messaging: workbenchAddress "${this.config.workbenchAddress}" cannot also bind a DSH session`)
     this.configuredBindings = this.config.bindings
     this.effective = []
     this.disposeStatus = runtime.onStatus(agent => { if (agent.status === 'idle') this.observe(this.pumpAfterAddressing(agent.sessionId)) })
@@ -104,6 +111,25 @@ export class CrewMessagingService {
     if (recipient.status !== 'routable') throw new Error(`crew messaging: recipient "${recipient.address}" is ${recipient.status}`)
     const lease = await this.ensureLease()
     const result = await this.fabric.submit({ producer_id: this.config.adapterId, lease_token: lease.lease_token, operation_id: `${sessionId}:${callId}`, sender_address: senderAddress, recipient_address: recipient.address, body: text, activation_policy: 'wake_when_idle', ttl: this.config.ttl, ...(replyToMessageId === undefined ? {} : { reply_to_message_id: replyToMessageId }) })
+    return { messageId: result.message.message_id, replayed: result.replayed }
+  }
+  /** Submit one human workbench prompt to a public adapter session without exposing the lease to the browser. */
+  async sendWorkbench(sessionId: string, operationId: string, text: string): Promise<{ messageId: string; replayed: boolean }> {
+    if (sessionId.trim() === '') throw new Error('crew messaging: target session is required')
+    if (operationId.trim() === '') throw new Error('crew messaging: operation is required')
+    if (text.trim() === '') throw new Error('crew messaging: prompt is required')
+    if (Buffer.byteLength(text, 'utf8') > CREW_WORKBENCH_PROMPT_MAX_BYTES) throw new Error(CREW_WORKBENCH_PROMPT_TOO_LARGE)
+    const lease = await this.ensureLease()
+    const bindings = await this.fabric.listBindings()
+    await this.ensureWorkbenchBinding(lease, bindings.addresses)
+    const recipients = bindings.addresses.filter(binding => binding.bound && binding.target_ref === sessionId && binding.capabilities.includes('queued-prompt-delivery'))
+    if (recipients.length !== 1) throw new Error('crew messaging: target session cannot accept workbench prompts')
+    const recipient = recipients[0]!
+    const result = await this.fabric.submit({
+      producer_id: this.config.adapterId, lease_token: lease.lease_token, operation_id: `workbench:${operationId}`,
+      sender_address: this.config.workbenchAddress, recipient_address: recipient.address, body: text,
+      activation_policy: 'wake_when_idle', ttl: this.config.ttl,
+    })
     return { messageId: result.message.message_id, replayed: result.replayed }
   }
 
@@ -145,6 +171,15 @@ export class CrewMessagingService {
     const discovered = this.discovery === undefined ? [] : await this.discovery.discover()
     const desired = effectiveBindings(this.configuredBindings, discovered)
     await this.bind(desired)
+  }
+  private async ensureWorkbenchBinding(lease: Lease, bindings: readonly Binding[]): Promise<void> {
+    const current = bindings.find(binding => binding.address === this.config.workbenchAddress)
+    if (current?.bound && current.adapter_id === this.config.adapterId && current.target_ref === workbenchTarget && current.capabilities.length === workbenchCapabilities.length && workbenchCapabilities.every(capability => current.capabilities.includes(capability))) return
+    if (current?.bound && current.adapter_id !== this.config.adapterId) throw new Error(`crew messaging: workbench address "${this.config.workbenchAddress}" is owned by another adapter`)
+    await this.fabric.putBinding(this.config.workbenchAddress, {
+      actor_adapter_id: this.config.adapterId, lease_token: lease.lease_token, adapter_id: this.config.adapterId, target_ref: workbenchTarget,
+      capabilities: workbenchCapabilities, ...(current === undefined ? {} : { expected_revision: current.revision }),
+    })
   }
   private async bind(plan: AddressPlan): Promise<void> {
     const { all: wanted, dynamic } = plan

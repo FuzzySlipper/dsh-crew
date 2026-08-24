@@ -152,6 +152,7 @@ function addressKey(address) {
 const defaults$1 = {
 	adapterId: "dsh-crew-messaging",
 	instanceId: "dsh-crew-messaging-local",
+	workbenchAddress: "dsh/workbench",
 	leaseDuration: "2m",
 	renewMs: 45e3,
 	pollMs: 1e3,
@@ -160,6 +161,9 @@ const defaults$1 = {
 	acceptanceTimeoutMs: 1e3,
 	acceptancePollMs: 10
 };
+const workbenchTarget = "dsh-crew-workbench";
+const workbenchCapabilities = ["prompt-submit"];
+const CREW_WORKBENCH_PROMPT_TOO_LARGE = "crew messaging: prompt must be 16 KiB or smaller";
 /** A leased FIFO pump that only delivers an immutable fabric envelope once DSH accepted it. */
 var CrewMessagingService = class {
 	fabric;
@@ -192,6 +196,8 @@ var CrewMessagingService = class {
 			...config
 		};
 		validateBindings(this.config.bindings);
+		if (this.config.workbenchAddress.trim() === "") throw new Error("crew messaging: workbenchAddress is required");
+		if (this.config.bindings.some((binding) => binding.address === this.config.workbenchAddress)) throw new Error(`crew messaging: workbenchAddress "${this.config.workbenchAddress}" cannot also bind a DSH session`);
 		this.configuredBindings = this.config.bindings;
 		this.effective = [];
 		this.disposeStatus = runtime.onStatus((agent) => {
@@ -257,6 +263,33 @@ var CrewMessagingService = class {
 			replayed: result.replayed
 		};
 	}
+	/** Submit one human workbench prompt to a public adapter session without exposing the lease to the browser. */
+	async sendWorkbench(sessionId, operationId, text) {
+		if (sessionId.trim() === "") throw new Error("crew messaging: target session is required");
+		if (operationId.trim() === "") throw new Error("crew messaging: operation is required");
+		if (text.trim() === "") throw new Error("crew messaging: prompt is required");
+		if (Buffer.byteLength(text, "utf8") > 16384) throw new Error(CREW_WORKBENCH_PROMPT_TOO_LARGE);
+		const lease = await this.ensureLease();
+		const bindings = await this.fabric.listBindings();
+		await this.ensureWorkbenchBinding(lease, bindings.addresses);
+		const recipients = bindings.addresses.filter((binding) => binding.bound && binding.target_ref === sessionId && binding.capabilities.includes("queued-prompt-delivery"));
+		if (recipients.length !== 1) throw new Error("crew messaging: target session cannot accept workbench prompts");
+		const recipient = recipients[0];
+		const result = await this.fabric.submit({
+			producer_id: this.config.adapterId,
+			lease_token: lease.lease_token,
+			operation_id: `workbench:${operationId}`,
+			sender_address: this.config.workbenchAddress,
+			recipient_address: recipient.address,
+			body: text,
+			activation_policy: "wake_when_idle",
+			ttl: this.config.ttl
+		});
+		return {
+			messageId: result.message.message_id,
+			replayed: result.replayed
+		};
+	}
 	schedule() {
 		if (!this.stopped) this.timer = setTimeout(() => {
 			this.timer = void 0;
@@ -305,6 +338,19 @@ var CrewMessagingService = class {
 		const discovered = this.discovery === void 0 ? [] : await this.discovery.discover();
 		const desired = effectiveBindings(this.configuredBindings, discovered);
 		await this.bind(desired);
+	}
+	async ensureWorkbenchBinding(lease, bindings) {
+		const current = bindings.find((binding) => binding.address === this.config.workbenchAddress);
+		if (current?.bound && current.adapter_id === this.config.adapterId && current.target_ref === workbenchTarget && current.capabilities.length === workbenchCapabilities.length && workbenchCapabilities.every((capability) => current.capabilities.includes(capability))) return;
+		if (current?.bound && current.adapter_id !== this.config.adapterId) throw new Error(`crew messaging: workbench address "${this.config.workbenchAddress}" is owned by another adapter`);
+		await this.fabric.putBinding(this.config.workbenchAddress, {
+			actor_adapter_id: this.config.adapterId,
+			lease_token: lease.lease_token,
+			adapter_id: this.config.adapterId,
+			target_ref: workbenchTarget,
+			capabilities: workbenchCapabilities,
+			...current === void 0 ? {} : { expected_revision: current.revision }
+		});
 	}
 	async bind(plan) {
 		const { all: wanted, dynamic } = plan;
@@ -857,6 +903,9 @@ function preview(value) {
 const CREW_SESSIONS_PATH = "/plugins/dsh-crew-messaging/sessions";
 const CREW_SESSION_EVENTS_PATH = "/plugins/dsh-crew-messaging/session-events";
 const CREW_SESSION_EVENTS_STREAM_PATH = "/plugins/dsh-crew-messaging/session-events/stream";
+const CREW_SESSION_PROMPT_PATH = "/plugins/dsh-crew-messaging/session-prompt";
+const CREW_SESSION_PROMPT_REQUEST_MAX_BYTES = 20 * 1024;
+const CREW_SESSION_PROMPT_TOO_LARGE = "Crew prompt request must be 20 KiB or smaller";
 /** Build explicit browser fields from the service's public session response. */
 async function crewForeignSessionsSnapshot(input) {
 	const value = object(await (await requestJson(input, "/v1/sessions", { limit: boundedLimit(input.limit, 100) })).json());
@@ -917,6 +966,26 @@ function crewForeignSessionEventsHandler(input) {
 			}));
 		} catch (error) {
 			respondJson(response, 503, { error: error instanceof Error ? error.message : "Crew session service is unavailable" });
+		}
+	};
+}
+/** Keep browser prompts same-origin while the provider retains its fabric lease. */
+function crewForeignSessionPromptHandler(input) {
+	return async (request, response) => {
+		if (request.method !== "POST") return methodNotAllowed(response, "POST");
+		try {
+			const body = object(JSON.parse(await requestText(request, CREW_SESSION_PROMPT_REQUEST_MAX_BYTES)));
+			const sessionId = text(body?.session_id);
+			const operationId = text(body?.operation_id);
+			const prompt = text(body?.text);
+			if (sessionId === void 0 || operationId === void 0 || prompt === void 0) throw new Error("session_id, operation_id, and text are required");
+			const submitted = await input.adapter.sendWorkbench(sessionId, operationId, prompt);
+			respondJson(response, 200, {
+				messageId: submitted.messageId,
+				replayed: submitted.replayed
+			});
+		} catch (error) {
+			respondJson(response, 400, { error: error instanceof Error ? error.message : "Crew prompt submission failed" });
 		}
 	};
 }
@@ -997,9 +1066,20 @@ function upstreamUrl(fabricUrl, path, query) {
 	for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
 	return url;
 }
-function methodNotAllowed(response) {
-	response.writeHead(405, { allow: "GET" });
+function methodNotAllowed(response, allow = "GET") {
+	response.writeHead(405, { allow });
 	response.end();
+}
+async function requestText(request, maxBytes = CREW_SESSION_PROMPT_REQUEST_MAX_BYTES) {
+	const chunks = [];
+	let bytes = 0;
+	for await (const chunk of request) {
+		const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+		bytes += value.length;
+		if (bytes > maxBytes) throw new Error(CREW_SESSION_PROMPT_TOO_LARGE);
+		chunks.push(value);
+	}
+	return Buffer.concat(chunks).toString("utf8");
 }
 function respondJson(response, status, value) {
 	response.writeHead(status, {
@@ -1129,6 +1209,7 @@ var CrewMessagingProvider = class extends Service {
 		const sessions = crewForeignSessionsHandler({ fabricUrl });
 		const events = crewForeignSessionEventsHandler({ fabricUrl });
 		const stream = crewForeignSessionEventsStreamHandler({ fabricUrl });
+		const prompt = crewForeignSessionPromptHandler({ adapter: this.service });
 		ctx.inject(["webServer"], (webCtx) => {
 			const webServer = webCtx.get("webServer");
 			webCtx.effect(() => webServer.register({
@@ -1151,6 +1232,11 @@ var CrewMessagingProvider = class extends Service {
 				path: CREW_SESSION_EVENTS_STREAM_PATH,
 				handler: stream
 			}), "crew-messaging: foreign session event stream route");
+			webCtx.effect(() => webServer.register({
+				kind: "exact",
+				path: CREW_SESSION_PROMPT_PATH,
+				handler: prompt
+			}), "crew-messaging: foreign session prompt route");
 		});
 		const disposeTools = installScopedTools(ctx, this.service);
 		ctx.effect(() => {
@@ -1173,6 +1259,10 @@ var CrewMessagingProvider = class extends Service {
 	/** Refresh subscription emitted after the directory map is coherent. */
 	onDirectoryChanged(listener) {
 		return this.service.onDirectoryChanged(listener);
+	}
+	/** Submit a browser workbench prompt through this provider's held fabric lease. */
+	sendWorkbench(sessionId, operationId, text) {
+		return this.service.sendWorkbench(sessionId, operationId, text);
 	}
 };
 var DshRuntime = class {
