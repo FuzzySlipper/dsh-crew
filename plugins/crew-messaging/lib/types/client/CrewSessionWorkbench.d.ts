@@ -1,9 +1,10 @@
 /** Framework-independent foreign-session workbench state and same-origin browser port. */
-import type { CrewForeignSession, CrewForeignSessionEvent, CrewForeignSessionEventsSnapshot, CrewForeignSessionsSnapshot } from '../dashboard/types.ts';
+import type { CrewForeignSession, CrewForeignSessionEvent, CrewForeignSessionEventsSnapshot, CrewForeignSessionsSnapshot, CrewWorkbenchInboxSnapshot } from '../dashboard/types.ts';
 export declare const CREW_SESSIONS_ENDPOINT = "/plugins/dsh-crew-messaging/sessions";
 export declare const CREW_SESSION_EVENTS_ENDPOINT = "/plugins/dsh-crew-messaging/session-events";
 export declare const CREW_SESSION_EVENTS_STREAM_ENDPOINT = "/plugins/dsh-crew-messaging/session-events/stream";
 export declare const CREW_SESSION_PROMPT_ENDPOINT = "/plugins/dsh-crew-messaging/session-prompt";
+export declare const CREW_WORKBENCH_INBOX_ENDPOINT = "/plugins/dsh-crew-messaging/workbench-inbox";
 export declare const CREW_CODEX_CREATE_ENDPOINT = "/plugins/dsh-crew-messaging/codex/create";
 export declare const CREW_CODEX_INTERRUPT_ENDPOINT = "/plugins/dsh-crew-messaging/codex/interrupt";
 export declare const CREW_CODEX_INTERACTIONS_ENDPOINT = "/plugins/dsh-crew-messaging/codex/interactions";
@@ -19,6 +20,7 @@ export interface CrewEventSource {
 export interface CrewSessionWorkbenchPort {
     listSessions(signal: AbortSignal): Promise<CrewForeignSessionsSnapshot>;
     listEvents(sessionId: string, cursor: number, signal: AbortSignal): Promise<CrewForeignSessionEventsSnapshot>;
+    listInbox?(signal: AbortSignal): Promise<CrewWorkbenchInboxSnapshot>;
     stream(sessionId: string, cursor: number): CrewEventSource;
     submit?(sessionId: string, text: string, operationId: string): Promise<{
         readonly messageId: string;
@@ -69,6 +71,9 @@ export interface CrewSessionWorkbenchState {
     readonly submissionError: string | undefined;
     readonly interactions: readonly CrewPendingInteraction[];
     readonly controlCapabilities: readonly string[];
+    readonly inbox: CrewWorkbenchInboxSnapshot['messages'];
+    readonly inboxLoading: boolean;
+    readonly inboxError: string | undefined;
 }
 /**
  * Own selection fetches and one EventSource. Changing selection or disposing cancels both.
@@ -90,6 +95,9 @@ export declare class CrewSessionWorkbenchController {
     private interactionAbort;
     private interactionTimer;
     private interactionLoading;
+    private inboxAbort;
+    private inboxTimer;
+    private inboxGeneration;
     constructor(port: CrewSessionWorkbenchPort, report?: (error: unknown) => void, operationId?: () => string);
     /** @returns The immutable render snapshot. */
     getSnapshot(): CrewSessionWorkbenchState;
@@ -117,6 +125,9 @@ export declare class CrewSessionWorkbenchController {
     respondInteraction(interaction: CrewPendingInteraction, decision: string, responseOverride?: unknown): Promise<boolean>;
     private reloadInteractions;
     private scheduleInteractions;
+    /** Poll the durable workbench mailbox only while its drawer is visible. */
+    private reloadInbox;
+    private scheduleInbox;
     private openStream;
     private stopSelection;
     private patch;
@@ -132,4 +143,6 @@ export declare function decodeCrewForeignSessionEvent(value: unknown): CrewForei
 export declare function decodeSessions(value: unknown): CrewForeignSessionsSnapshot | undefined;
 /** Parse explicit event-history DTOs and ignore unknown upstream keys. */
 export declare function decodeEvents(value: unknown): CrewForeignSessionEventsSnapshot | undefined;
+/** Parse an explicit workbench mailbox response and discard unknown server fields. */
+export declare function decodeInbox(value: unknown): CrewWorkbenchInboxSnapshot | undefined;
 //# sourceMappingURL=CrewSessionWorkbench.d.ts.map

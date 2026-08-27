@@ -1,11 +1,12 @@
 /** Framework-independent foreign-session workbench state and same-origin browser port. */
 
-import type { CrewForeignSession, CrewForeignSessionEvent, CrewForeignSessionEventsSnapshot, CrewForeignSessionsSnapshot } from '../dashboard/types.ts'
+import type { CrewForeignSession, CrewForeignSessionEvent, CrewForeignSessionEventsSnapshot, CrewForeignSessionsSnapshot, CrewWorkbenchInboxSnapshot } from '../dashboard/types.ts'
 
 export const CREW_SESSIONS_ENDPOINT = '/plugins/dsh-crew-messaging/sessions'
 export const CREW_SESSION_EVENTS_ENDPOINT = '/plugins/dsh-crew-messaging/session-events'
 export const CREW_SESSION_EVENTS_STREAM_ENDPOINT = '/plugins/dsh-crew-messaging/session-events/stream'
 export const CREW_SESSION_PROMPT_ENDPOINT = '/plugins/dsh-crew-messaging/session-prompt'
+export const CREW_WORKBENCH_INBOX_ENDPOINT = '/plugins/dsh-crew-messaging/workbench-inbox'
 export const CREW_CODEX_CREATE_ENDPOINT = '/plugins/dsh-crew-messaging/codex/create'
 export const CREW_CODEX_INTERRUPT_ENDPOINT = '/plugins/dsh-crew-messaging/codex/interrupt'
 export const CREW_CODEX_INTERACTIONS_ENDPOINT = '/plugins/dsh-crew-messaging/codex/interactions'
@@ -23,6 +24,7 @@ export interface CrewEventSource {
 export interface CrewSessionWorkbenchPort {
   listSessions(signal: AbortSignal): Promise<CrewForeignSessionsSnapshot>
   listEvents(sessionId: string, cursor: number, signal: AbortSignal): Promise<CrewForeignSessionEventsSnapshot>
+  listInbox?(signal: AbortSignal): Promise<CrewWorkbenchInboxSnapshot>
   stream(sessionId: string, cursor: number): CrewEventSource
   submit?(sessionId: string, text: string, operationId: string): Promise<{ readonly messageId: string; readonly replayed: boolean }>
   controlCapabilities?(): Promise<readonly string[]>
@@ -50,10 +52,13 @@ export interface CrewSessionWorkbenchState {
   readonly submissionError: string | undefined
   readonly interactions: readonly CrewPendingInteraction[]
   readonly controlCapabilities: readonly string[]
+  readonly inbox: CrewWorkbenchInboxSnapshot['messages']
+  readonly inboxLoading: boolean
+  readonly inboxError: string | undefined
 }
 
 const INITIAL: CrewSessionWorkbenchState = {
-  open: false, loading: false, sessions: [], selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined, submitting: false, submissionError: undefined, interactions: [], controlCapabilities: [],
+  open: false, loading: false, sessions: [], selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined, submitting: false, submissionError: undefined, interactions: [], controlCapabilities: [], inbox: [], inboxLoading: false, inboxError: undefined,
 }
 
 /**
@@ -73,6 +78,9 @@ export class CrewSessionWorkbenchController {
   private interactionAbort: AbortController | undefined
   private interactionTimer: ReturnType<typeof setTimeout> | undefined
   private interactionLoading = false
+  private inboxAbort: AbortController | undefined
+  private inboxTimer: ReturnType<typeof setTimeout> | undefined
+  private inboxGeneration = 0
 
   public constructor(private readonly port: CrewSessionWorkbenchPort, private readonly report: (error: unknown) => void = () => {}, private readonly operationId: () => string = () => crypto.randomUUID()) {}
 
@@ -82,12 +90,14 @@ export class CrewSessionWorkbenchController {
   public subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
 
   /** Open the drawer and refresh the known public sessions. */
-  public async open(): Promise<void> { if (this.disposed) return; this.patch({ open: true }); await this.refresh() }
+  public async open(): Promise<void> { if (this.disposed) return; this.patch({ open: true }); await this.refresh(); this.scheduleInbox() }
   /** Close the drawer and release all selection-specific browser resources. */
   public close(): void {
     this.listAbort?.abort(); this.listAbort = undefined
+    this.inboxGeneration += 1; this.inboxAbort?.abort(); this.inboxAbort = undefined
+    if (this.inboxTimer !== undefined) clearTimeout(this.inboxTimer); this.inboxTimer = undefined
     this.selectionGeneration += 1; this.stopSelection()
-    this.patch({ open: false, loading: false, selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined, submitting: false, submissionError: undefined, interactions: [], controlCapabilities: [] })
+    this.patch({ open: false, loading: false, selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined, submitting: false, submissionError: undefined, interactions: [], controlCapabilities: [], inbox: [], inboxLoading: false, inboxError: undefined })
   }
   /** Dispose the controller when the DSH client plugin fiber unloads. */
   public dispose(): void { if (this.disposed) return; this.disposed = true; this.close(); this.listeners.clear() }
@@ -95,6 +105,7 @@ export class CrewSessionWorkbenchController {
   /** Reload the public session list and retain only a still-present selection. */
   public async refresh(): Promise<void> {
     if (this.disposed || !this.state.open) return
+    const inbox = this.reloadInbox()
     this.listAbort?.abort()
     const controller = new AbortController(); this.listAbort = controller
     this.patch({ loading: true, error: undefined })
@@ -107,11 +118,12 @@ export class CrewSessionWorkbenchController {
       try { controlCapabilities = await this.port.controlCapabilities?.() ?? [] } catch { /* controls stay absent when the sidecar is offline */ }
       if (controller.signal.aborted || this.listAbort !== controller) return
       this.patch({ sessions: snapshot.sessions, loading: false, controlCapabilities })
-      if (selected === undefined) { this.selectionGeneration += 1; this.stopSelection(); this.patch({ selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed' }); return }
+      if (selected === undefined) { this.selectionGeneration += 1; this.stopSelection(); this.patch({ selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed' }); await inbox; return }
       if (selected !== current || this.state.events.length === 0) await this.select(selected)
+      await inbox
     } catch (error) {
       if (controller.signal.aborted) return
-      this.report(error); this.patch({ loading: false, error: message(error), connection: this.state.selectedSessionId === undefined ? 'error' : this.state.connection })
+      await inbox; this.report(error); this.patch({ loading: false, error: message(error), connection: this.state.selectedSessionId === undefined ? 'error' : this.state.connection })
     }
   }
 
@@ -172,6 +184,25 @@ export class CrewSessionWorkbenchController {
 
   private async reloadInteractions(sessionId: string, generation: number): Promise<void> { if (this.port.interactions === undefined || !this.canRespond(sessionId) || this.interactionLoading) return; this.interactionAbort?.abort(); const controller = new AbortController(); this.interactionAbort = controller; this.interactionLoading = true; try { const interactions = await this.port.interactions(sessionId, controller.signal); if (!this.disposed && !controller.signal.aborted && generation === this.selectionGeneration && sessionId === this.state.selectedSessionId) this.patch({ interactions }) } catch (error) { if (!controller.signal.aborted && generation === this.selectionGeneration) this.report(error) } finally { if (this.interactionAbort === controller) this.interactionAbort = undefined; this.interactionLoading = false } }
   private scheduleInteractions(sessionId: string, generation: number): void { if (this.disposed || generation !== this.selectionGeneration || !this.state.open || !this.canRespond(sessionId)) return; this.interactionTimer = setTimeout(async () => { this.interactionTimer = undefined; await this.reloadInteractions(sessionId, generation); this.scheduleInteractions(sessionId, generation) }, 1_000) }
+  /** Poll the durable workbench mailbox only while its drawer is visible. */
+  private async reloadInbox(): Promise<void> {
+    if (this.port.listInbox === undefined || this.disposed || !this.state.open) return
+    this.inboxAbort?.abort()
+    const controller = new AbortController(); this.inboxAbort = controller
+    const generation = this.inboxGeneration
+    this.patch({ inboxLoading: true, inboxError: undefined })
+    try {
+      const snapshot = await this.port.listInbox(controller.signal)
+      if (!this.disposed && this.state.open && !controller.signal.aborted && this.inboxAbort === controller && generation === this.inboxGeneration) this.patch({ inbox: snapshot.messages, inboxLoading: false })
+    } catch (error) {
+      if (!controller.signal.aborted && !this.disposed && this.state.open && this.inboxAbort === controller && generation === this.inboxGeneration) { this.report(error); this.patch({ inboxLoading: false, inboxError: message(error) }) }
+    } finally { if (this.inboxAbort === controller) this.inboxAbort = undefined }
+  }
+  private scheduleInbox(): void {
+    if (this.disposed || !this.state.open || this.port.listInbox === undefined || this.inboxTimer !== undefined) return
+    const generation = this.inboxGeneration
+    this.inboxTimer = setTimeout(async () => { this.inboxTimer = undefined; if (generation !== this.inboxGeneration) return; await this.reloadInbox(); this.scheduleInbox() }, 3_000)
+  }
 
   private openStream(sessionId: string, cursor: number, generation: number): void {
     const source = this.port.stream(sessionId, cursor); this.source = source
@@ -207,6 +238,7 @@ export function createCrewSessionWorkbenchPort(input: {
   return {
     listSessions: async signal => decodeSnapshot(await fetchJson(request, CREW_SESSIONS_ENDPOINT, signal), decodeSessions),
     listEvents: async (sessionId, cursor, signal) => decodeSnapshot(await fetchJson(request, `${CREW_SESSION_EVENTS_ENDPOINT}?${new URLSearchParams({ session_id: sessionId, cursor: String(cursor) })}`, signal), decodeEvents),
+    listInbox: async signal => decodeSnapshot(await fetchJson(request, CREW_WORKBENCH_INBOX_ENDPOINT, signal), decodeInbox),
     stream: (sessionId, cursor) => eventSource(`${CREW_SESSION_EVENTS_STREAM_ENDPOINT}?${new URLSearchParams({ session_id: sessionId, cursor: String(cursor) })}`),
     submit: async (sessionId, text, operationId) => decodeSubmission(await fetchJson(request, CREW_SESSION_PROMPT_ENDPOINT, undefined, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: sessionId, text, operation_id: operationId }) })),
     controlCapabilities: async () => { const value = object(await fetchJson(request, CREW_CODEX_CAPABILITIES_ENDPOINT)); const capabilities = Array.isArray(value?.capabilities) && value.capabilities.every(item => typeof item === 'string') ? value.capabilities as readonly string[] : undefined; if (capabilities === undefined) throw new Error('received invalid Codex capabilities'); return capabilities },
@@ -233,6 +265,15 @@ export function decodeSessions(value: unknown): CrewForeignSessionsSnapshot | un
 export function decodeEvents(value: unknown): CrewForeignSessionEventsSnapshot | undefined {
   const record = object(value); if (!Array.isArray(record?.events)) return undefined
   const events = record.events.map(decodeEvent); return events.some(event => event === undefined) ? undefined : { events: events as readonly CrewForeignSessionEvent[] }
+}
+/** Parse an explicit workbench mailbox response and discard unknown server fields. */
+export function decodeInbox(value: unknown): CrewWorkbenchInboxSnapshot | undefined {
+  const record = object(value); if (!Array.isArray(record?.messages)) return undefined
+  const messages = record.messages.map(item => {
+    const entry = object(item); const messageId = text(entry?.messageId); const deliveryId = text(entry?.deliveryId); const state = text(entry?.state); const sender = text(entry?.sender); const body = text(entry?.body); const createdAt = text(entry?.createdAt); const replyToMessageId = text(entry?.replyToMessageId)
+    return messageId === undefined || deliveryId === undefined || state === undefined || sender === undefined || body === undefined || createdAt === undefined ? undefined : { messageId, deliveryId, state, sender, body, createdAt, ...(replyToMessageId === undefined ? {} : { replyToMessageId }) }
+  })
+  return messages.some(item => item === undefined) ? undefined : { messages: messages as CrewWorkbenchInboxSnapshot['messages'] }
 }
 
 async function fetchJson(request: typeof fetch, url: string, signal?: AbortSignal, init: RequestInit = {}): Promise<unknown> {

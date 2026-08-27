@@ -3,6 +3,7 @@ export const CREW_SESSIONS_ENDPOINT = '/plugins/dsh-crew-messaging/sessions';
 export const CREW_SESSION_EVENTS_ENDPOINT = '/plugins/dsh-crew-messaging/session-events';
 export const CREW_SESSION_EVENTS_STREAM_ENDPOINT = '/plugins/dsh-crew-messaging/session-events/stream';
 export const CREW_SESSION_PROMPT_ENDPOINT = '/plugins/dsh-crew-messaging/session-prompt';
+export const CREW_WORKBENCH_INBOX_ENDPOINT = '/plugins/dsh-crew-messaging/workbench-inbox';
 export const CREW_CODEX_CREATE_ENDPOINT = '/plugins/dsh-crew-messaging/codex/create';
 export const CREW_CODEX_INTERRUPT_ENDPOINT = '/plugins/dsh-crew-messaging/codex/interrupt';
 export const CREW_CODEX_INTERACTIONS_ENDPOINT = '/plugins/dsh-crew-messaging/codex/interactions';
@@ -10,7 +11,7 @@ export const CREW_CODEX_RESPOND_ENDPOINT = '/plugins/dsh-crew-messaging/codex/re
 export const CREW_CODEX_CAPABILITIES_ENDPOINT = '/plugins/dsh-crew-messaging/codex/capabilities';
 export const CREW_SESSION_PROMPT_MAX_CHARS = 12_000;
 const INITIAL = {
-    open: false, loading: false, sessions: [], selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined, submitting: false, submissionError: undefined, interactions: [], controlCapabilities: [],
+    open: false, loading: false, sessions: [], selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined, submitting: false, submissionError: undefined, interactions: [], controlCapabilities: [], inbox: [], inboxLoading: false, inboxError: undefined,
 };
 /**
  * Own selection fetches and one EventSource. Changing selection or disposing cancels both.
@@ -32,6 +33,9 @@ export class CrewSessionWorkbenchController {
     interactionAbort;
     interactionTimer;
     interactionLoading = false;
+    inboxAbort;
+    inboxTimer;
+    inboxGeneration = 0;
     constructor(port, report = () => { }, operationId = () => crypto.randomUUID()) {
         this.port = port;
         this.report = report;
@@ -43,14 +47,20 @@ export class CrewSessionWorkbenchController {
     subscribe(listener) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
     /** Open the drawer and refresh the known public sessions. */
     async open() { if (this.disposed)
-        return; this.patch({ open: true }); await this.refresh(); }
+        return; this.patch({ open: true }); await this.refresh(); this.scheduleInbox(); }
     /** Close the drawer and release all selection-specific browser resources. */
     close() {
         this.listAbort?.abort();
         this.listAbort = undefined;
+        this.inboxGeneration += 1;
+        this.inboxAbort?.abort();
+        this.inboxAbort = undefined;
+        if (this.inboxTimer !== undefined)
+            clearTimeout(this.inboxTimer);
+        this.inboxTimer = undefined;
         this.selectionGeneration += 1;
         this.stopSelection();
-        this.patch({ open: false, loading: false, selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined, submitting: false, submissionError: undefined, interactions: [], controlCapabilities: [] });
+        this.patch({ open: false, loading: false, selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed', error: undefined, submitting: false, submissionError: undefined, interactions: [], controlCapabilities: [], inbox: [], inboxLoading: false, inboxError: undefined });
     }
     /** Dispose the controller when the DSH client plugin fiber unloads. */
     dispose() { if (this.disposed)
@@ -59,6 +69,7 @@ export class CrewSessionWorkbenchController {
     async refresh() {
         if (this.disposed || !this.state.open)
             return;
+        const inbox = this.reloadInbox();
         this.listAbort?.abort();
         const controller = new AbortController();
         this.listAbort = controller;
@@ -81,14 +92,17 @@ export class CrewSessionWorkbenchController {
                 this.selectionGeneration += 1;
                 this.stopSelection();
                 this.patch({ selectedSessionId: undefined, events: [], cursor: 0, connection: 'closed' });
+                await inbox;
                 return;
             }
             if (selected !== current || this.state.events.length === 0)
                 await this.select(selected);
+            await inbox;
         }
         catch (error) {
             if (controller.signal.aborted)
                 return;
+            await inbox;
             this.report(error);
             this.patch({ loading: false, error: message(error), connection: this.state.selectedSessionId === undefined ? 'error' : this.state.connection });
         }
@@ -208,6 +222,38 @@ export class CrewSessionWorkbenchController {
     } }
     scheduleInteractions(sessionId, generation) { if (this.disposed || generation !== this.selectionGeneration || !this.state.open || !this.canRespond(sessionId))
         return; this.interactionTimer = setTimeout(async () => { this.interactionTimer = undefined; await this.reloadInteractions(sessionId, generation); this.scheduleInteractions(sessionId, generation); }, 1_000); }
+    /** Poll the durable workbench mailbox only while its drawer is visible. */
+    async reloadInbox() {
+        if (this.port.listInbox === undefined || this.disposed || !this.state.open)
+            return;
+        this.inboxAbort?.abort();
+        const controller = new AbortController();
+        this.inboxAbort = controller;
+        const generation = this.inboxGeneration;
+        this.patch({ inboxLoading: true, inboxError: undefined });
+        try {
+            const snapshot = await this.port.listInbox(controller.signal);
+            if (!this.disposed && this.state.open && !controller.signal.aborted && this.inboxAbort === controller && generation === this.inboxGeneration)
+                this.patch({ inbox: snapshot.messages, inboxLoading: false });
+        }
+        catch (error) {
+            if (!controller.signal.aborted && !this.disposed && this.state.open && this.inboxAbort === controller && generation === this.inboxGeneration) {
+                this.report(error);
+                this.patch({ inboxLoading: false, inboxError: message(error) });
+            }
+        }
+        finally {
+            if (this.inboxAbort === controller)
+                this.inboxAbort = undefined;
+        }
+    }
+    scheduleInbox() {
+        if (this.disposed || !this.state.open || this.port.listInbox === undefined || this.inboxTimer !== undefined)
+            return;
+        const generation = this.inboxGeneration;
+        this.inboxTimer = setTimeout(async () => { this.inboxTimer = undefined; if (generation !== this.inboxGeneration)
+            return; await this.reloadInbox(); this.scheduleInbox(); }, 3_000);
+    }
     openStream(sessionId, cursor, generation) {
         const source = this.port.stream(sessionId, cursor);
         this.source = source;
@@ -244,6 +290,7 @@ export function createCrewSessionWorkbenchPort(input = {}) {
     return {
         listSessions: async (signal) => decodeSnapshot(await fetchJson(request, CREW_SESSIONS_ENDPOINT, signal), decodeSessions),
         listEvents: async (sessionId, cursor, signal) => decodeSnapshot(await fetchJson(request, `${CREW_SESSION_EVENTS_ENDPOINT}?${new URLSearchParams({ session_id: sessionId, cursor: String(cursor) })}`, signal), decodeEvents),
+        listInbox: async (signal) => decodeSnapshot(await fetchJson(request, CREW_WORKBENCH_INBOX_ENDPOINT, signal), decodeInbox),
         stream: (sessionId, cursor) => eventSource(`${CREW_SESSION_EVENTS_STREAM_ENDPOINT}?${new URLSearchParams({ session_id: sessionId, cursor: String(cursor) })}`),
         submit: async (sessionId, text, operationId) => decodeSubmission(await fetchJson(request, CREW_SESSION_PROMPT_ENDPOINT, undefined, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: sessionId, text, operation_id: operationId }) })),
         controlCapabilities: async () => { const value = object(await fetchJson(request, CREW_CODEX_CAPABILITIES_ENDPOINT)); const capabilities = Array.isArray(value?.capabilities) && value.capabilities.every(item => typeof item === 'string') ? value.capabilities : undefined; if (capabilities === undefined)
@@ -284,6 +331,24 @@ export function decodeEvents(value) {
         return undefined;
     const events = record.events.map(decodeEvent);
     return events.some(event => event === undefined) ? undefined : { events: events };
+}
+/** Parse an explicit workbench mailbox response and discard unknown server fields. */
+export function decodeInbox(value) {
+    const record = object(value);
+    if (!Array.isArray(record?.messages))
+        return undefined;
+    const messages = record.messages.map(item => {
+        const entry = object(item);
+        const messageId = text(entry?.messageId);
+        const deliveryId = text(entry?.deliveryId);
+        const state = text(entry?.state);
+        const sender = text(entry?.sender);
+        const body = text(entry?.body);
+        const createdAt = text(entry?.createdAt);
+        const replyToMessageId = text(entry?.replyToMessageId);
+        return messageId === undefined || deliveryId === undefined || state === undefined || sender === undefined || body === undefined || createdAt === undefined ? undefined : { messageId, deliveryId, state, sender, body, createdAt, ...(replyToMessageId === undefined ? {} : { replyToMessageId }) };
+    });
+    return messages.some(item => item === undefined) ? undefined : { messages: messages };
 }
 async function fetchJson(request, url, signal, init = {}) {
     const response = await request(url, { cache: 'no-store', ...init, ...(signal === undefined ? {} : { signal }) });

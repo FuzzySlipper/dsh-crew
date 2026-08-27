@@ -2,17 +2,19 @@
 
 import { Readable } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { CrewForeignSession, CrewForeignSessionEvent, CrewForeignSessionEventsSnapshot, CrewForeignSessionsSnapshot } from './types.ts'
+import type { CrewForeignSession, CrewForeignSessionEvent, CrewForeignSessionEventsSnapshot, CrewForeignSessionsSnapshot, CrewWorkbenchInboxItem, CrewWorkbenchInboxSnapshot } from './types.ts'
 
 /** Same-origin browser endpoints; the browser never reaches the loopback fabric directly. */
 export const CREW_SESSIONS_PATH = '/plugins/dsh-crew-messaging/sessions'
 export const CREW_SESSION_EVENTS_PATH = '/plugins/dsh-crew-messaging/session-events'
 export const CREW_SESSION_EVENTS_STREAM_PATH = '/plugins/dsh-crew-messaging/session-events/stream'
 export const CREW_SESSION_PROMPT_PATH = '/plugins/dsh-crew-messaging/session-prompt'
+export const CREW_WORKBENCH_INBOX_PATH = '/plugins/dsh-crew-messaging/workbench-inbox'
 
 /** Keep the shell workbench responsive even when an adapter has a long event history. */
 export const CREW_SESSION_LIST_LIMIT = 100
 export const CREW_SESSION_EVENT_LIMIT = 200
+export const CREW_WORKBENCH_INBOX_LIMIT = 100
 export const CREW_SESSION_PROMPT_REQUEST_MAX_BYTES = 20 * 1024
 export const CREW_SESSION_PROMPT_TOO_LARGE = 'Crew prompt request must be 20 KiB or smaller'
 
@@ -57,6 +59,31 @@ export async function crewForeignSessionEventsSnapshot(input: {
   return { events: events as readonly CrewForeignSessionEvent[] }
 }
 
+/** Join the public workbench mailbox to immutable message facts for browser display. */
+export async function crewWorkbenchInboxSnapshot(input: {
+  readonly fabricUrl: string
+  readonly workbenchAddress?: string
+  readonly limit?: number
+  readonly request?: ForeignSessionFetch
+}): Promise<CrewWorkbenchInboxSnapshot> {
+  const address = input.workbenchAddress?.trim() || 'dsh/workbench'
+  const mailboxResponse = await requestJson(input, `/v1/mailbox/${encodeURIComponent(address)}`, {})
+  const mailbox = object(await mailboxResponse.json())
+  const deliveries = Array.isArray(mailbox?.deliveries) ? mailbox.deliveries.map(projectInboxDelivery) : undefined
+  if (deliveries === undefined || deliveries.some(value => value === undefined)) throw new Error('invalid workbench inbox response')
+  const limit = boundedLimit(input.limit, CREW_WORKBENCH_INBOX_LIMIT)
+  const recent = [...(deliveries as readonly InboxDelivery[])].sort((left, right) => left.acceptedSequence - right.acceptedSequence).slice(-limit)
+  const messages = await Promise.all(recent.map(async delivery => {
+    const response = await requestJson(input, `/v1/messages/${encodeURIComponent(delivery.messageId)}`, {})
+    return projectInboxMessage(await response.json())
+  }))
+  if (messages.some(message => message === undefined)) throw new Error('invalid workbench inbox message')
+  return { messages: recent.map((delivery, index) => {
+    const message = messages[index]!
+    return { messageId: message.messageId, deliveryId: delivery.deliveryId, state: delivery.state, sender: message.sender, body: message.body, createdAt: message.createdAt, ...(message.replyToMessageId === undefined ? {} : { replyToMessageId: message.replyToMessageId }) }
+  }).reverse() }
+}
+
 /** Own the same-origin JSON response lifecycle for a bounded foreign session list. */
 export function crewForeignSessionsHandler(input: { readonly fabricUrl: string; readonly request?: ForeignSessionFetch }): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
   return async (request, response) => {
@@ -87,6 +114,18 @@ export function crewForeignSessionEventsHandler(input: { readonly fabricUrl: str
       respondJson(response, 200, await crewForeignSessionEventsSnapshot({ fabricUrl: input.fabricUrl, sessionId, cursor, limit, ...(input.request === undefined ? {} : { request: input.request }) }))
     } catch (error) {
       respondJson(response, 503, { error: error instanceof Error ? error.message : 'Crew session service is unavailable' })
+    }
+  }
+}
+
+/** Same-origin view of replies delivered to the DSH workbench address. */
+export function crewWorkbenchInboxHandler(input: { readonly fabricUrl: string; readonly workbenchAddress?: string; readonly request?: ForeignSessionFetch }): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
+  return async (request, response) => {
+    if (request.method !== 'GET') return methodNotAllowed(response)
+    try {
+      respondJson(response, 200, await crewWorkbenchInboxSnapshot({ fabricUrl: input.fabricUrl, limit: requestLimit(request, CREW_WORKBENCH_INBOX_LIMIT), ...(input.workbenchAddress === undefined ? {} : { workbenchAddress: input.workbenchAddress }), ...(input.request === undefined ? {} : { request: input.request }) }))
+    } catch (error) {
+      respondJson(response, 503, { error: error instanceof Error ? error.message : 'Crew workbench inbox is unavailable' })
     }
   }
 }
@@ -203,6 +242,16 @@ function projectEvent(value: unknown): CrewForeignSessionEvent | undefined {
   const payload = safePayload(record!.payload)
   if (payload === undefined) return undefined
   return { eventId, sessionId, sequence, cursor, eventType, payload, occurredAt, recordedAt }
+}
+type InboxDelivery = { readonly deliveryId: string; readonly messageId: string; readonly state: string; readonly acceptedSequence: number }
+type InboxMessage = { readonly messageId: string; readonly sender: string; readonly body: string; readonly createdAt: string; readonly replyToMessageId?: string }
+function projectInboxDelivery(value: unknown): InboxDelivery | undefined {
+  const record = object(value); const deliveryId = text(record?.delivery_id); const messageId = text(record?.message_id); const state = text(record?.state); const acceptedSequence = integer(record?.accepted_sequence)
+  return deliveryId === undefined || messageId === undefined || state === undefined || acceptedSequence === undefined ? undefined : { deliveryId, messageId, state, acceptedSequence }
+}
+function projectInboxMessage(value: unknown): InboxMessage | undefined {
+  const record = object(value); const messageId = text(record?.message_id); const sender = text(record?.sender_address); const body = text(record?.body); const createdAt = text(record?.created_at); const replyToMessageId = text(record?.reply_to_message_id)
+  return messageId === undefined || sender === undefined || body === undefined || createdAt === undefined ? undefined : { messageId, sender, body, createdAt, ...(replyToMessageId === undefined ? {} : { replyToMessageId }) }
 }
 /** Preserve generic event inspection while excluding the service's private routing credentials. */
 function safePayload(value: unknown): unknown | undefined {

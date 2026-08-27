@@ -91,6 +91,10 @@ function operation(deliveryId, action) {
 function nativeAttempt(deliveryId) {
 	return `dsh-crew:${deliveryId}:native`;
 }
+/** A workbench receipt is durable in the fabric ledger, never a DSH runtime insertion. */
+function workbenchAttempt(deliveryId) {
+	return `dsh-crew:${deliveryId}:workbench`;
+}
 //#endregion
 //#region src/addressing.ts
 /**
@@ -163,7 +167,8 @@ const defaults$1 = {
 	acceptancePollMs: 10
 };
 const workbenchTarget = "dsh-crew-workbench";
-const workbenchCapabilities = ["prompt-submit"];
+/** `deliver_when_idle` makes the workbench visible to Codex's dynamic crew directory. */
+const workbenchCapabilities = ["deliver_when_idle", "workbench-inbox"];
 const CREW_WORKBENCH_PROMPT_TOO_LARGE = "crew messaging: prompt must be 16 KiB or smaller";
 /** A leased FIFO pump that only delivers an immutable fabric envelope once DSH accepted it. */
 var CrewMessagingService = class {
@@ -198,7 +203,7 @@ var CrewMessagingService = class {
 		};
 		validateBindings(this.config.bindings);
 		if (this.config.workbenchAddress.trim() === "") throw new Error("crew messaging: workbenchAddress is required");
-		if (this.config.bindings.some((binding) => binding.address === this.config.workbenchAddress)) throw new Error(`crew messaging: workbenchAddress "${this.config.workbenchAddress}" cannot also bind a DSH session`);
+		if (this.config.bindings.some((binding) => addressKey(binding.address) === addressKey(this.config.workbenchAddress))) throw new Error(`crew messaging: workbenchAddress "${this.config.workbenchAddress}" cannot also bind a DSH session`);
 		this.configuredBindings = this.config.bindings;
 		this.effective = [];
 		this.disposeStatus = runtime.onStatus((agent) => {
@@ -303,15 +308,19 @@ var CrewMessagingService = class {
 				await this.initialize();
 				return;
 			}
-			await this.ensureLease();
+			const lease = await this.ensureLease();
+			await this.ensureWorkbenchBinding(lease, (await this.fabric.listBindings()).addresses);
 			await this.enqueueAddressing();
+			await this.reconcileWorkbench();
 			await Promise.all(this.effective.map((binding) => this.pumpSession(binding.sessionId)));
+			await this.pumpWorkbench();
 		} finally {
 			this.schedule();
 		}
 	}
 	async initialize() {
-		await this.ensureLease();
+		const lease = await this.ensureLease();
+		await this.ensureWorkbenchBinding(lease, (await this.fabric.listBindings()).addresses);
 		await this.enqueueAddressing();
 		await this.reconcile();
 		this.initialized = true;
@@ -336,7 +345,7 @@ var CrewMessagingService = class {
 	}
 	async refreshAddressing() {
 		if (this.stopped) return;
-		const discovered = this.discovery === void 0 ? [] : await this.discovery.discover();
+		const discovered = this.discovery === void 0 ? [] : (await this.discovery.discover()).filter((binding) => addressKey(binding.address) !== addressKey(this.config.workbenchAddress));
 		const desired = effectiveBindings(this.configuredBindings, discovered);
 		await this.bind(desired);
 	}
@@ -495,6 +504,35 @@ var CrewMessagingService = class {
 			});
 		}
 	}
+	/** Accept one reply into the immutable workbench mailbox without touching a DSH session. */
+	async pumpWorkbench() {
+		if (this.stopped) return;
+		const lease = await this.ensureLease();
+		const claimed = await this.fabric.claim({
+			adapter_id: this.config.adapterId,
+			lease_token: lease.lease_token,
+			operation_id: operation(`${this.config.workbenchAddress}:${Date.now()}`, "workbench-claim"),
+			recipient_address: this.config.workbenchAddress,
+			recipient_generation: await this.generation(this.config.workbenchAddress),
+			availability: "idle",
+			claim_duration: this.config.claimDuration
+		});
+		if (!claimed.claimed || claimed.delivery === void 0 || claimed.claim_token === void 0) return;
+		const attempt = workbenchAttempt(claimed.delivery.delivery_id);
+		await this.fabric.begin(claimed.delivery.delivery_id, {
+			adapter_id: this.config.adapterId,
+			lease_token: lease.lease_token,
+			operation_id: operation(claimed.delivery.delivery_id, "workbench-begin"),
+			claim_token: claimed.claim_token,
+			native_attempt_ref: attempt
+		});
+		await this.fabric.acknowledge(claimed.delivery.delivery_id, {
+			adapter_id: this.config.adapterId,
+			lease_token: lease.lease_token,
+			operation_id: operation(claimed.delivery.delivery_id, "workbench-ack"),
+			native_attempt_ref: attempt
+		});
+	}
 	release(deliveryId, claimToken, leaseToken) {
 		return this.fabric.release(deliveryId, {
 			adapter_id: this.config.adapterId,
@@ -514,6 +552,7 @@ var CrewMessagingService = class {
 	}
 	async reconcile() {
 		const values = await this.fabric.deliveries();
+		await this.reconcileWorkbench(values.deliveries);
 		for (const delivery of values.deliveries.filter((item) => item.state === "dispatching" && item.claim_owner_adapter_id === this.config.adapterId && item.native_attempt_ref === nativeAttempt(item.delivery_id))) {
 			const binding = this.effective.find((item) => item.address === delivery.recipient_address);
 			if (binding === void 0) continue;
@@ -535,6 +574,19 @@ var CrewMessagingService = class {
 				continue;
 			}
 			await this.fabric.acknowledge(delivery.delivery_id, body);
+		}
+	}
+	/** A failed acknowledgement is retried on ordinary polls; the fabric ledger is already durable. */
+	async reconcileWorkbench(known) {
+		const deliveries = known ?? (await this.fabric.deliveries()).deliveries;
+		for (const delivery of deliveries.filter((item) => item.state === "dispatching" && item.claim_owner_adapter_id === this.config.adapterId && item.recipient_address === this.config.workbenchAddress && item.native_attempt_ref === workbenchAttempt(item.delivery_id))) {
+			const lease = await this.ensureLease();
+			await this.fabric.acknowledge(delivery.delivery_id, {
+				adapter_id: this.config.adapterId,
+				lease_token: lease.lease_token,
+				operation_id: operation(delivery.delivery_id, "workbench-ack"),
+				native_attempt_ref: workbenchAttempt(delivery.delivery_id)
+			});
 		}
 	}
 	/** Track background work and contain its rejection at timer/event boundaries. */
@@ -905,6 +957,7 @@ const CREW_SESSIONS_PATH = "/plugins/dsh-crew-messaging/sessions";
 const CREW_SESSION_EVENTS_PATH = "/plugins/dsh-crew-messaging/session-events";
 const CREW_SESSION_EVENTS_STREAM_PATH = "/plugins/dsh-crew-messaging/session-events/stream";
 const CREW_SESSION_PROMPT_PATH = "/plugins/dsh-crew-messaging/session-prompt";
+const CREW_WORKBENCH_INBOX_PATH = "/plugins/dsh-crew-messaging/workbench-inbox";
 const CREW_SESSION_PROMPT_REQUEST_MAX_BYTES = 20 * 1024;
 const CREW_SESSION_PROMPT_TOO_LARGE = "Crew prompt request must be 20 KiB or smaller";
 /** Build explicit browser fields from the service's public session response. */
@@ -925,6 +978,31 @@ async function crewForeignSessionEventsSnapshot(input) {
 	const events = Array.isArray(value?.events) ? value.events.map(projectEvent) : void 0;
 	if (events === void 0 || events.some((event) => event === void 0)) throw new Error("invalid session event response");
 	return { events };
+}
+/** Join the public workbench mailbox to immutable message facts for browser display. */
+async function crewWorkbenchInboxSnapshot(input) {
+	const address = input.workbenchAddress?.trim() || "dsh/workbench";
+	const mailbox = object(await (await requestJson(input, `/v1/mailbox/${encodeURIComponent(address)}`, {})).json());
+	const deliveries = Array.isArray(mailbox?.deliveries) ? mailbox.deliveries.map(projectInboxDelivery) : void 0;
+	if (deliveries === void 0 || deliveries.some((value) => value === void 0)) throw new Error("invalid workbench inbox response");
+	const limit = boundedLimit(input.limit, 100);
+	const recent = [...deliveries].sort((left, right) => left.acceptedSequence - right.acceptedSequence).slice(-limit);
+	const messages = await Promise.all(recent.map(async (delivery) => {
+		return projectInboxMessage(await (await requestJson(input, `/v1/messages/${encodeURIComponent(delivery.messageId)}`, {})).json());
+	}));
+	if (messages.some((message) => message === void 0)) throw new Error("invalid workbench inbox message");
+	return { messages: recent.map((delivery, index) => {
+		const message = messages[index];
+		return {
+			messageId: message.messageId,
+			deliveryId: delivery.deliveryId,
+			state: delivery.state,
+			sender: message.sender,
+			body: message.body,
+			createdAt: message.createdAt,
+			...message.replyToMessageId === void 0 ? {} : { replyToMessageId: message.replyToMessageId }
+		};
+	}).reverse() };
 }
 /** Own the same-origin JSON response lifecycle for a bounded foreign session list. */
 function crewForeignSessionsHandler(input) {
@@ -967,6 +1045,22 @@ function crewForeignSessionEventsHandler(input) {
 			}));
 		} catch (error) {
 			respondJson(response, 503, { error: error instanceof Error ? error.message : "Crew session service is unavailable" });
+		}
+	};
+}
+/** Same-origin view of replies delivered to the DSH workbench address. */
+function crewWorkbenchInboxHandler(input) {
+	return async (request, response) => {
+		if (request.method !== "GET") return methodNotAllowed(response);
+		try {
+			respondJson(response, 200, await crewWorkbenchInboxSnapshot({
+				fabricUrl: input.fabricUrl,
+				limit: requestLimit(request, 100),
+				...input.workbenchAddress === void 0 ? {} : { workbenchAddress: input.workbenchAddress },
+				...input.request === void 0 ? {} : { request: input.request }
+			}));
+		} catch (error) {
+			respondJson(response, 503, { error: error instanceof Error ? error.message : "Crew workbench inbox is unavailable" });
 		}
 	};
 }
@@ -1161,6 +1255,34 @@ function projectEvent(value) {
 		recordedAt
 	};
 }
+function projectInboxDelivery(value) {
+	const record = object(value);
+	const deliveryId = text(record?.delivery_id);
+	const messageId = text(record?.message_id);
+	const state = text(record?.state);
+	const acceptedSequence = integer(record?.accepted_sequence);
+	return deliveryId === void 0 || messageId === void 0 || state === void 0 || acceptedSequence === void 0 ? void 0 : {
+		deliveryId,
+		messageId,
+		state,
+		acceptedSequence
+	};
+}
+function projectInboxMessage(value) {
+	const record = object(value);
+	const messageId = text(record?.message_id);
+	const sender = text(record?.sender_address);
+	const body = text(record?.body);
+	const createdAt = text(record?.created_at);
+	const replyToMessageId = text(record?.reply_to_message_id);
+	return messageId === void 0 || sender === void 0 || body === void 0 || createdAt === void 0 ? void 0 : {
+		messageId,
+		sender,
+		body,
+		createdAt,
+		...replyToMessageId === void 0 ? {} : { replyToMessageId }
+	};
+}
 /** Preserve generic event inspection while excluding the service's private routing credentials. */
 function safePayload(value) {
 	if (value === null || typeof value === "string" || typeof value === "boolean") return value;
@@ -1335,6 +1457,10 @@ var CrewMessagingProvider = class extends Service {
 		const events = crewForeignSessionEventsHandler({ fabricUrl });
 		const stream = crewForeignSessionEventsStreamHandler({ fabricUrl });
 		const prompt = crewForeignSessionPromptHandler({ adapter: this.service });
+		const inbox = crewWorkbenchInboxHandler({
+			fabricUrl,
+			...config.workbenchAddress === void 0 ? {} : { workbenchAddress: config.workbenchAddress }
+		});
 		const controls = codexControlHandler(new CodexControlClient(config.codexControlUrl ?? "http://127.0.0.1:8788"));
 		ctx.inject(["webServer"], (webCtx) => {
 			const webServer = webCtx.get("webServer");
@@ -1363,6 +1489,11 @@ var CrewMessagingProvider = class extends Service {
 				path: CREW_SESSION_PROMPT_PATH,
 				handler: prompt
 			}), "crew-messaging: foreign session prompt route");
+			webCtx.effect(() => webServer.register({
+				kind: "exact",
+				path: CREW_WORKBENCH_INBOX_PATH,
+				handler: inbox
+			}), "crew-messaging: workbench inbox route");
 			webCtx.effect(() => webServer.register({
 				kind: "exact",
 				path: CREW_CODEX_CREATE_PATH,

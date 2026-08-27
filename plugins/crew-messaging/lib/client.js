@@ -277,6 +277,7 @@ window.__ModuleLoader__.load({
 		const CREW_SESSION_EVENTS_ENDPOINT = "/plugins/dsh-crew-messaging/session-events";
 		const CREW_SESSION_EVENTS_STREAM_ENDPOINT = "/plugins/dsh-crew-messaging/session-events/stream";
 		const CREW_SESSION_PROMPT_ENDPOINT = "/plugins/dsh-crew-messaging/session-prompt";
+		const CREW_WORKBENCH_INBOX_ENDPOINT = "/plugins/dsh-crew-messaging/workbench-inbox";
 		const CREW_CODEX_CREATE_ENDPOINT = "/plugins/dsh-crew-messaging/codex/create";
 		const CREW_CODEX_INTERRUPT_ENDPOINT = "/plugins/dsh-crew-messaging/codex/interrupt";
 		const CREW_CODEX_INTERACTIONS_ENDPOINT = "/plugins/dsh-crew-messaging/codex/interactions";
@@ -295,7 +296,10 @@ window.__ModuleLoader__.load({
 			submitting: false,
 			submissionError: void 0,
 			interactions: [],
-			controlCapabilities: []
+			controlCapabilities: [],
+			inbox: [],
+			inboxLoading: false,
+			inboxError: void 0
 		};
 		/**
 		* Own selection fetches and one EventSource. Changing selection or disposing cancels both.
@@ -317,6 +321,9 @@ window.__ModuleLoader__.load({
 			interactionAbort;
 			interactionTimer;
 			interactionLoading = false;
+			inboxAbort;
+			inboxTimer;
+			inboxGeneration = 0;
 			constructor(port, report = () => {}, operationId = () => crypto.randomUUID()) {
 				this.port = port;
 				this.report = report;
@@ -338,11 +345,17 @@ window.__ModuleLoader__.load({
 				if (this.disposed) return;
 				this.patch({ open: true });
 				await this.refresh();
+				this.scheduleInbox();
 			}
 			/** Close the drawer and release all selection-specific browser resources. */
 			close() {
 				this.listAbort?.abort();
 				this.listAbort = void 0;
+				this.inboxGeneration += 1;
+				this.inboxAbort?.abort();
+				this.inboxAbort = void 0;
+				if (this.inboxTimer !== void 0) clearTimeout(this.inboxTimer);
+				this.inboxTimer = void 0;
 				this.selectionGeneration += 1;
 				this.stopSelection();
 				this.patch({
@@ -356,7 +369,10 @@ window.__ModuleLoader__.load({
 					submitting: false,
 					submissionError: void 0,
 					interactions: [],
-					controlCapabilities: []
+					controlCapabilities: [],
+					inbox: [],
+					inboxLoading: false,
+					inboxError: void 0
 				});
 			}
 			/** Dispose the controller when the DSH client plugin fiber unloads. */
@@ -369,6 +385,7 @@ window.__ModuleLoader__.load({
 			/** Reload the public session list and retain only a still-present selection. */
 			async refresh() {
 				if (this.disposed || !this.state.open) return;
+				const inbox = this.reloadInbox();
 				this.listAbort?.abort();
 				const controller = new AbortController();
 				this.listAbort = controller;
@@ -400,11 +417,14 @@ window.__ModuleLoader__.load({
 							cursor: 0,
 							connection: "closed"
 						});
+						await inbox;
 						return;
 					}
 					if (selected !== current || this.state.events.length === 0) await this.select(selected);
+					await inbox;
 				} catch (error) {
 					if (controller.signal.aborted) return;
+					await inbox;
 					this.report(error);
 					this.patch({
 						loading: false,
@@ -569,6 +589,45 @@ window.__ModuleLoader__.load({
 					this.scheduleInteractions(sessionId, generation);
 				}, 1e3);
 			}
+			/** Poll the durable workbench mailbox only while its drawer is visible. */
+			async reloadInbox() {
+				if (this.port.listInbox === void 0 || this.disposed || !this.state.open) return;
+				this.inboxAbort?.abort();
+				const controller = new AbortController();
+				this.inboxAbort = controller;
+				const generation = this.inboxGeneration;
+				this.patch({
+					inboxLoading: true,
+					inboxError: void 0
+				});
+				try {
+					const snapshot = await this.port.listInbox(controller.signal);
+					if (!this.disposed && this.state.open && !controller.signal.aborted && this.inboxAbort === controller && generation === this.inboxGeneration) this.patch({
+						inbox: snapshot.messages,
+						inboxLoading: false
+					});
+				} catch (error) {
+					if (!controller.signal.aborted && !this.disposed && this.state.open && this.inboxAbort === controller && generation === this.inboxGeneration) {
+						this.report(error);
+						this.patch({
+							inboxLoading: false,
+							inboxError: message(error)
+						});
+					}
+				} finally {
+					if (this.inboxAbort === controller) this.inboxAbort = void 0;
+				}
+			}
+			scheduleInbox() {
+				if (this.disposed || !this.state.open || this.port.listInbox === void 0 || this.inboxTimer !== void 0) return;
+				const generation = this.inboxGeneration;
+				this.inboxTimer = setTimeout(async () => {
+					this.inboxTimer = void 0;
+					if (generation !== this.inboxGeneration) return;
+					await this.reloadInbox();
+					this.scheduleInbox();
+				}, 3e3);
+			}
 			openStream(sessionId, cursor, generation) {
 				const source = this.port.stream(sessionId, cursor);
 				this.source = source;
@@ -621,6 +680,7 @@ window.__ModuleLoader__.load({
 					session_id: sessionId,
 					cursor: String(cursor)
 				})}`, signal), decodeEvents),
+				listInbox: async (signal) => decodeSnapshot(await fetchJson(request, CREW_WORKBENCH_INBOX_ENDPOINT, signal), decodeInbox),
 				stream: (sessionId, cursor) => eventSource(`${CREW_SESSION_EVENTS_STREAM_ENDPOINT}?${new URLSearchParams({
 					session_id: sessionId,
 					cursor: String(cursor)
@@ -706,6 +766,31 @@ window.__ModuleLoader__.load({
 			if (!Array.isArray(record?.events)) return void 0;
 			const events = record.events.map(decodeEvent);
 			return events.some((event) => event === void 0) ? void 0 : { events };
+		}
+		/** Parse an explicit workbench mailbox response and discard unknown server fields. */
+		function decodeInbox(value) {
+			const record = object(value);
+			if (!Array.isArray(record?.messages)) return void 0;
+			const messages = record.messages.map((item) => {
+				const entry = object(item);
+				const messageId = text(entry?.messageId);
+				const deliveryId = text(entry?.deliveryId);
+				const state = text(entry?.state);
+				const sender = text(entry?.sender);
+				const body = text(entry?.body);
+				const createdAt = text(entry?.createdAt);
+				const replyToMessageId = text(entry?.replyToMessageId);
+				return messageId === void 0 || deliveryId === void 0 || state === void 0 || sender === void 0 || body === void 0 || createdAt === void 0 ? void 0 : {
+					messageId,
+					deliveryId,
+					state,
+					sender,
+					body,
+					createdAt,
+					...replyToMessageId === void 0 ? {} : { replyToMessageId }
+				};
+			});
+			return messages.some((item) => item === void 0) ? void 0 : { messages };
 		}
 		async function fetchJson(request, url, signal, init = {}) {
 			const response = await request(url, {
@@ -889,6 +974,7 @@ window.__ModuleLoader__.load({
 .dshCrewSessionsHeader,.dshCrewSessionsToolbar{display:flex;align-items:center;justify-content:space-between;gap:12px}.dshCrewSessionsHeader h2,.dshCrewSessionsHeader p,.dshCrewSessionsEmpty,.dshCrewSessionEvent p{margin:0}.dshCrewSessionsHeader p,.dshCrewSessionsMuted{color:var(--dsw-alias-label-secondary);font-size:13px}.dshCrewSessionsButton{min-height:32px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 10px;font:inherit;color:inherit;background:transparent;cursor:pointer}.dshCrewSessionsButton:hover,.dshCrewSessionsButton:focus-visible,.dshCrewSessionList button:hover,.dshCrewSessionList button:focus-visible{background:var(--dsw-alias-interactive-bg-hover)}
 .dshCrewSessionsGrid{display:grid;grid-template-columns:minmax(220px,300px) minmax(0,1fr);gap:16px;height:calc(100% - 74px);margin-top:18px}.dshCrewSessionList,.dshCrewSessionTimeline{min-height:0;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1)}.dshCrewSessionList{overflow:auto;padding:8px}.dshCrewSessionList button{display:grid;width:100%;gap:4px;border:0;border-radius:7px;padding:10px;text-align:left;font:inherit;color:inherit;background:transparent;cursor:pointer}.dshCrewSessionList button[aria-current=true]{background:var(--dsw-alias-interactive-bg-hover)}.dshCrewSessionList small{color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}.dshCrewSessionTimeline{display:grid;grid-template-rows:auto minmax(0,1fr);overflow:hidden}.dshCrewSessionsToolbar{padding:12px;border-bottom:1px solid var(--dsw-alias-border-l2)}.dshCrewSessionEvents{display:grid;align-content:start;gap:10px;overflow:auto;padding:12px}.dshCrewSessionEvent{display:grid;gap:7px;border-left:2px solid var(--dsw-alias-brand-primary);padding:0 0 0 10px}.dshCrewSessionEvent header{display:flex;justify-content:space-between;gap:12px;font-size:13px}.dshCrewSessionEvent time,.dshCrewSessionEvent small{color:var(--dsw-alias-label-secondary);font-size:12px}.dshCrewSessionEvent pre{max-height:240px;overflow:auto;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-label-secondary)}.dshCrewSessionsState{border-radius:999px;padding:2px 8px;font-size:12px;background:var(--dsw-alias-bg-module-platform)}.dshCrewSessionsState[data-state=error]{color:var(--dsw-alias-state-error-primary)}
 .dshCrewSessionTimeline{grid-template-rows:auto auto minmax(0,1fr)}.dshCrewSessionPrompt{display:grid;gap:7px;padding:12px;border-bottom:1px solid var(--dsw-alias-border-l2)}.dshCrewSessionPrompt label{font-size:13px;font-weight:600}.dshCrewSessionPrompt textarea{box-sizing:border-box;width:100%;min-height:72px;resize:vertical;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;padding:8px;font:inherit;color:inherit;background:var(--dsw-alias-bg-layer-2)}.dshCrewSessionPrompt>div{display:flex;align-items:center;gap:8px}.dshCrewSessionsError{color:var(--dsw-alias-state-error-primary);font-size:12px}
+.dshCrewWorkbenchInbox{max-height:min(32vh,320px);overflow:auto}
 @media(max-width:720px){.dshCrewSessionsDrawer{width:100%;padding:16px}.dshCrewSessionsGrid{grid-template-columns:1fr;grid-template-rows:minmax(150px,35%) minmax(0,1fr);height:calc(100% - 84px)}}
 `;
 		/** Install one owned style node for the current client plugin fiber. */
@@ -1018,6 +1104,11 @@ window.__ModuleLoader__.load({
 										})
 									] })]
 								}),
+								(0, react_jsx_runtime.jsx)(CrewWorkbenchInbox, {
+									loading: state.inboxLoading,
+									error: state.inboxError,
+									values: state.inbox
+								}),
 								(0, react_jsx_runtime.jsx)(CrewControls, {
 									controller,
 									selected
@@ -1062,6 +1153,32 @@ window.__ModuleLoader__.load({
 					controller,
 					value
 				}, value.id))]
+			});
+		}
+		function CrewWorkbenchInbox({ loading, error, values }) {
+			return (0, react_jsx_runtime.jsxs)("section", {
+				className: "dshCrewSessionPrompt dshCrewWorkbenchInbox",
+				children: [(0, react_jsx_runtime.jsx)("strong", { children: "Workbench inbox" }), loading ? (0, react_jsx_runtime.jsx)("p", {
+					className: "dshCrewSessionsMuted",
+					children: "Loading replies…"
+				}) : error === void 0 ? values.length === 0 ? (0, react_jsx_runtime.jsx)("p", {
+					className: "dshCrewSessionsMuted",
+					children: "No messages have arrived for this workbench."
+				}) : values.map((value) => (0, react_jsx_runtime.jsxs)("article", {
+					className: "dshCrewSessionEvent",
+					children: [
+						(0, react_jsx_runtime.jsxs)("header", { children: [(0, react_jsx_runtime.jsx)("strong", { children: value.sender }), (0, react_jsx_runtime.jsx)("time", {
+							dateTime: value.createdAt,
+							children: value.createdAt
+						})] }),
+						(0, react_jsx_runtime.jsx)("p", { children: value.body }),
+						(0, react_jsx_runtime.jsxs)("small", { children: [value.state, value.replyToMessageId === void 0 ? "" : ` · reply to ${value.replyToMessageId}`] })
+					]
+				}, value.deliveryId)) : (0, react_jsx_runtime.jsx)("p", {
+					className: "dshCrewSessionsError",
+					role: "status",
+					children: error
+				})]
 			});
 		}
 		function InteractionCard({ controller, value }) {

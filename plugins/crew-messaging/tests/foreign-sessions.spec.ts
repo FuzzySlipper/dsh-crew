@@ -3,7 +3,7 @@ import { PassThrough } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { describe, expect, it } from 'vitest'
 import {
-  CREW_SESSION_EVENTS_STREAM_PATH, CREW_SESSION_PROMPT_PATH, crewForeignSessionEventsSnapshot, crewForeignSessionEventsStreamHandler, crewForeignSessionPromptHandler, crewForeignSessionsHandler, crewForeignSessionsSnapshot,
+  CREW_SESSION_EVENTS_STREAM_PATH, CREW_SESSION_PROMPT_PATH, CREW_WORKBENCH_INBOX_PATH, crewForeignSessionEventsSnapshot, crewForeignSessionEventsStreamHandler, crewForeignSessionPromptHandler, crewForeignSessionsHandler, crewForeignSessionsSnapshot, crewWorkbenchInboxHandler, crewWorkbenchInboxSnapshot,
 } from '../src/dashboard/foreign-sessions.ts'
 
 const session = {
@@ -35,6 +35,35 @@ describe('foreign session host projections', () => {
 
   it('rejects malformed source records instead of forwarding a partial projection', async () => {
     await expect(crewForeignSessionsSnapshot({ fabricUrl: 'http://127.0.0.1:8787', request: async () => json({ sessions: [{ ...session, revision: 'two' }] }) })).rejects.toThrow('invalid session response')
+  })
+
+  it('joins a bounded workbench mailbox to immutable messages, newest first, without private delivery fields', async () => {
+    const calls: URL[] = []
+    const request = async (url: URL): Promise<Response> => {
+      calls.push(url)
+      if (url.pathname === '/v1/mailbox/dsh%2Fworkbench') return json({ deliveries: [
+        { delivery_id: 'd1', message_id: 'm1', accepted_sequence: 1, state: 'delivered', claim_owner_adapter_id: 'hidden' },
+        { delivery_id: 'd2', message_id: 'm2', accepted_sequence: 2, state: 'delivered', native_attempt_ref: 'hidden' },
+      ] })
+      if (url.pathname === '/v1/messages/m1') return json({ message_id: 'm1', sender_address: 'crew/codex', body: 'first', created_at: '2026-08-23T00:00:00Z' })
+      return json({ message_id: 'm2', sender_address: 'crew/codex', body: 'reply', reply_to_message_id: 'prompt-1', created_at: '2026-08-23T00:01:00Z' })
+    }
+    const snapshot = await crewWorkbenchInboxSnapshot({ fabricUrl: 'http://127.0.0.1:8787', request, limit: 1 })
+    expect(snapshot.messages).toEqual([{ messageId: 'm2', deliveryId: 'd2', state: 'delivered', sender: 'crew/codex', body: 'reply', replyToMessageId: 'prompt-1', createdAt: '2026-08-23T00:01:00Z' }])
+    expect(calls.map(call => call.pathname)).toEqual(['/v1/mailbox/dsh%2Fworkbench', '/v1/messages/m2'])
+    expect(JSON.stringify(snapshot)).not.toContain('hidden')
+  })
+
+  it('serves the browser workbench inbox only over the bounded same-origin GET route', async () => {
+    const request = new EventEmitter() as IncomingMessage
+    Object.assign(request, { method: 'GET', url: `${CREW_WORKBENCH_INBOX_PATH}?limit=999` })
+    const writes: unknown[][] = []; let body = ''
+    const response = { writeHead: (...args: unknown[]) => { writes.push(args) }, end: (value?: string) => { body = value ?? '' } }
+    await crewWorkbenchInboxHandler({ fabricUrl: 'http://127.0.0.1:8787', request: async url => {
+      if (url.pathname.includes('/mailbox/')) return json({ deliveries: [] })
+      return json({ message_id: 'unused' })
+    } })(request, response as unknown as ServerResponse)
+    expect(writes[0]?.[0]).toBe(200); expect(JSON.parse(body)).toEqual({ messages: [] })
   })
 
   it('answers JSON routes only to GET requests', async () => {

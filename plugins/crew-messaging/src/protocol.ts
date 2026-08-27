@@ -12,3 +12,5 @@ export const capabilities = ['deliver_when_idle', 'durable_next_turn', 'wake_ina
 /** Stable operation identities never contain the lease token. */
 export function operation(deliveryId: string, action: string): string { return `dsh-crew:${deliveryId}:${action}` }
 export function nativeAttempt(deliveryId: string): string { return `dsh-crew:${deliveryId}:native` }
+/** A workbench receipt is durable in the fabric ledger, never a DSH runtime insertion. */
+export function workbenchAttempt(deliveryId: string): string { return `dsh-crew:${deliveryId}:workbench` }

@@ -16,8 +16,8 @@ import { frameCrewDelivery } from './framing.ts'
 import { installScopedTools } from './tools.ts'
 import { CREW_DASHBOARD_PATH, crewDashboardHandler, dashboardTuning } from './dashboard/host.ts'
 import {
-  CREW_SESSION_EVENTS_PATH, CREW_SESSION_EVENTS_STREAM_PATH, CREW_SESSION_PROMPT_PATH, CREW_SESSIONS_PATH,
-  crewForeignSessionEventsHandler, crewForeignSessionEventsStreamHandler, crewForeignSessionPromptHandler, crewForeignSessionsHandler,
+  CREW_SESSION_EVENTS_PATH, CREW_SESSION_EVENTS_STREAM_PATH, CREW_SESSION_PROMPT_PATH, CREW_SESSIONS_PATH, CREW_WORKBENCH_INBOX_PATH,
+  crewForeignSessionEventsHandler, crewForeignSessionEventsStreamHandler, crewForeignSessionPromptHandler, crewForeignSessionsHandler, crewWorkbenchInboxHandler,
 } from './dashboard/foreign-sessions.ts'
 import { CodexControlClient, codexControlHandler, CREW_CODEX_CAPABILITIES_PATH, CREW_CODEX_CREATE_PATH, CREW_CODEX_INTERRUPT_PATH, CREW_CODEX_INTERACTIONS_PATH, CREW_CODEX_RESPOND_PATH } from './dashboard/codex-controls.ts'
 
@@ -55,6 +55,7 @@ export class CrewMessagingProvider extends Service {
     const events = crewForeignSessionEventsHandler({ fabricUrl })
     const stream = crewForeignSessionEventsStreamHandler({ fabricUrl })
     const prompt = crewForeignSessionPromptHandler({ adapter: this.service })
+    const inbox = crewWorkbenchInboxHandler({ fabricUrl, ...(config.workbenchAddress === undefined ? {} : { workbenchAddress: config.workbenchAddress }) })
     const controls = codexControlHandler(new CodexControlClient(config.codexControlUrl ?? 'http://127.0.0.1:8788'))
     ctx.inject(['webServer'], webCtx => {
       const webServer = webCtx.get('webServer') as WebRouteHost
@@ -63,6 +64,7 @@ export class CrewMessagingProvider extends Service {
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_SESSION_EVENTS_PATH, handler: events }), 'crew-messaging: foreign session events route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_SESSION_EVENTS_STREAM_PATH, handler: stream }), 'crew-messaging: foreign session event stream route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_SESSION_PROMPT_PATH, handler: prompt }), 'crew-messaging: foreign session prompt route')
+      webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_WORKBENCH_INBOX_PATH, handler: inbox }), 'crew-messaging: workbench inbox route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_CODEX_CREATE_PATH, handler: controls }), 'crew-messaging: Codex create route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_CODEX_CAPABILITIES_PATH, handler: controls }), 'crew-messaging: Codex capabilities route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_CODEX_INTERRUPT_PATH, handler: controls }), 'crew-messaging: Codex interrupt route')

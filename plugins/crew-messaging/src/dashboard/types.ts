@@ -91,3 +91,19 @@ export interface CrewForeignSessionsSnapshot {
 export interface CrewForeignSessionEventsSnapshot {
   readonly events: readonly CrewForeignSessionEvent[]
 }
+
+/** A browser-safe, bounded workbench mailbox record. */
+export interface CrewWorkbenchInboxItem {
+  readonly messageId: string
+  readonly deliveryId: string
+  readonly state: string
+  readonly sender: string
+  readonly body: string
+  readonly replyToMessageId?: string
+  readonly createdAt: string
+}
+
+/** Durable workbench replies and messages, newest first. */
+export interface CrewWorkbenchInboxSnapshot {
+  readonly messages: readonly CrewWorkbenchInboxItem[]
+}

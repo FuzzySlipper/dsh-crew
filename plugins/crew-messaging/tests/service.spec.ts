@@ -87,6 +87,57 @@ describe('CrewMessagingService', () => {
     await expect(adapter.sendWorkbench('alpha-session', 'click-2', 'nope')).rejects.toThrow('cannot accept workbench prompts')
     await adapter.dispose()
   })
+  it('binds the workbench before any prompt with Codex-routable capability and leaves a correct binding alone', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime()
+    const adapter = new CrewMessagingService(fabric, runtime, { pollMs: 60_000 })
+    await adapter.start()
+    expect(fabric.bindings.find(item => item.address === 'dsh/workbench')).toMatchObject({ adapter_id: 'dsh-crew-messaging', target_ref: 'dsh-crew-workbench', capabilities: ['deliver_when_idle', 'workbench-inbox'] })
+    const writes = fabric.bindWrites
+    await (adapter as any).tick()
+    expect(fabric.bindWrites).toBe(writes)
+    await adapter.dispose()
+  })
+  it('fails loudly when another adapter owns the workbench address', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime()
+    fabric.bindings.push({ address: 'dsh/workbench', bound: true, adapter_id: 'other-adapter', target_ref: 'other', capabilities: ['deliver_when_idle'], revision: 1, generation: 1 })
+    const adapter = new CrewMessagingService(fabric, runtime, { pollMs: 60_000 })
+    await expect(adapter.start()).rejects.toThrow('owned by another adapter')
+    await adapter.dispose()
+  })
+  it('reserves the workbench address case-insensitively from configured and discovered DSH sessions', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime(); const discovery = new FakeDiscovery()
+    expect(() => new CrewMessagingService(fabric, runtime, { workbenchAddress: 'dsh/workbench', bindings: [{ address: 'DSH/WORKBENCH', sessionId: 's1' }] })).toThrow('cannot also bind a DSH session')
+    discovery.values = [{ address: 'DSH/WORKBENCH', sessionId: 's1' }, { address: 'reviewer', sessionId: 's2' }]
+    const adapter = new CrewMessagingService(fabric, runtime, { pollMs: 60_000 }, discovery)
+    await adapter.start()
+    expect(adapter.addresses('s1')).toEqual([])
+    expect(adapter.addresses('s2')).toEqual(['reviewer'])
+    expect(fabric.bindings.find(item => item.address.toLowerCase() === 'dsh/workbench')).toMatchObject({ target_ref: 'dsh-crew-workbench' })
+    await adapter.dispose()
+  })
+  it('receipts workbench replies FIFO without resuming or invoking a DSH runtime', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime(); const adapter = new CrewMessagingService(fabric, runtime, { pollMs: 60_000 })
+    fabric.queue.push(
+      { claimed: true, replayed: false, delivery: delivery('reply-1', 'dsh/workbench'), message: envelope('m-reply-1', 'dsh/workbench'), claim_token: 'claim-1' },
+      { claimed: true, replayed: false, delivery: delivery('reply-2', 'dsh/workbench'), message: envelope('m-reply-2', 'dsh/workbench'), claim_token: 'claim-2' },
+    )
+    await adapter.start(); await (adapter as any).pumpWorkbench(); await (adapter as any).pumpWorkbench()
+    expect(fabric.begun).toEqual(['reply-1', 'reply-2']); expect(fabric.acked).toEqual(['reply-1', 'reply-2'])
+    expect(runtime.resumes).toEqual([]); expect(runtime.accepted.size).toBe(0)
+    await adapter.dispose()
+  })
+  it('reconciles only the adapter-owned stable workbench receipt attempt on an ordinary tick', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime(); const adapter = new CrewMessagingService(fabric, runtime, { pollMs: 60_000 })
+    await adapter.start()
+    fabric.dispatching.push(
+      { ...delivery('retry', 'dsh/workbench'), state: 'dispatching', native_attempt_ref: 'dsh-crew:retry:workbench' },
+      { ...delivery('wrong-attempt', 'dsh/workbench'), state: 'dispatching', native_attempt_ref: 'dsh-crew:wrong-attempt:native' },
+      { ...delivery('other-owner', 'dsh/workbench'), state: 'dispatching', claim_owner_adapter_id: 'other-adapter', native_attempt_ref: 'dsh-crew:other-owner:workbench' },
+    )
+    await (adapter as any).tick()
+    expect(fabric.acked).toContain('retry'); expect(fabric.acked).not.toContain('wrong-attempt'); expect(fabric.acked).not.toContain('other-owner')
+    await adapter.dispose()
+  })
   it('bounds a workbench prompt before fabric submission', async () => {
     const fabric = new FakeFabric(); const runtime = new FakeRuntime()
     fabric.bindings.push({ address: 'crew/codex', bound: true, adapter_id: 'crew-codex', target_ref: 'public-codex', capabilities: ['queued-prompt-delivery'], revision: 1, generation: 3 })
@@ -103,7 +154,7 @@ describe('CrewMessagingService', () => {
       const adapter = new CrewMessagingService(fabric, runtime, { bindings: [{ address: 'alpha', sessionId: 's1' }, { address: 'beta', sessionId: 's2' }], pollMs: 10 })
       await expect(adapter.start()).rejects.toThrow('fabric unavailable')
       await vi.advanceTimersByTimeAsync(10)
-      expect(fabric.registerCalls).toBe(2); expect(fabric.bindWrites).toBe(2)
+      expect(fabric.registerCalls).toBe(2); expect(fabric.bindWrites).toBe(3)
       fabric.queue.push({ claimed: false, replayed: false }, { claimed: true, replayed: false, delivery: delivery('after-retry'), message: envelope('m-after-retry'), claim_token: 'claim' })
       await vi.advanceTimersByTimeAsync(10)
       expect(runtime.accepted.get('s2')?.[0]?.source.deliveryId).toBe('after-retry')
@@ -159,7 +210,7 @@ describe('CrewMessagingService', () => {
     discovery.values = [{ address: 'alpha', sessionId: 's1' }]
     const adapter = new CrewMessagingService(fabric, runtime, { pollMs: 60_000 }, discovery)
     await adapter.start()
-    expect(fabric.bindWrites).toBe(0)
+    expect(fabric.bindWrites).toBe(1)
     discovery.change([{ address: 'bravo', sessionId: 's1' }])
     await (adapter as any).addressingTail
     expect(adapter.addresses('s1')).toEqual(['bravo'])
@@ -213,7 +264,7 @@ describe('CrewMessagingService', () => {
     expect(adapter.addresses('s2')).toEqual(['bravo'])
     expect(fabric.bindings.find(item => item.address === 'alpha')?.adapter_id).toBe('another-adapter')
     expect(fabric.bindings.find(item => item.address === 'bravo')?.target_ref).toBe('s2')
-    expect(fabric.bindWrites).toBe(1)
+    expect(fabric.bindWrites).toBe(2)
     expect(fabric.unbound).toEqual([])
     expect(adapter.directory()).toEqual([
       { address: 'alpha', status: 'conflict', source: 'session-title' },

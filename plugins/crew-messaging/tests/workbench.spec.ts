@@ -81,6 +81,28 @@ describe('foreign session workbench controller', () => {
     expect(decodeCrewForeignSessionEvent({ eventId: 'missing' })).toBeUndefined()
   })
 
+  it('loads the durable workbench inbox without requiring a selected session', async () => {
+    const controller = new CrewSessionWorkbenchController({
+      listSessions: async () => ({ sessions: [] }), listEvents: async () => ({ events: [] }), stream: () => new FakeEventSource(),
+      listInbox: async () => ({ messages: [{ messageId: 'reply-1', deliveryId: 'delivery-1', state: 'delivered', sender: 'crew/codex', body: 'done', replyToMessageId: 'prompt-1', createdAt: 'now' }] }),
+    })
+    await controller.open()
+    expect(controller.getSnapshot()).toMatchObject({ selectedSessionId: undefined, inboxLoading: false, inbox: [{ messageId: 'reply-1', replyToMessageId: 'prompt-1' }] })
+    controller.dispose()
+  })
+
+  it.each(['close', 'dispose'] as const)('aborts and ignores a stale workbench inbox result on %s', async action => {
+    let resolveInbox: ((value: { readonly messages: readonly never[] }) => void) | undefined; let aborted = false
+    const controller = new CrewSessionWorkbenchController({
+      listSessions: async () => ({ sessions: [] }), listEvents: async () => ({ events: [] }), stream: () => new FakeEventSource(),
+      listInbox: async signal => await new Promise(resolve => { resolveInbox = resolve; signal.addEventListener('abort', () => { aborted = true }) }),
+    })
+    const opening = controller.open()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    controller[action](); resolveInbox!({ messages: [] }); await opening
+    expect(aborted).toBe(true); expect(controller.getSnapshot()).toMatchObject({ open: false, inbox: [], inboxLoading: false })
+  })
+
   it('keeps one operation identity across a failed workbench prompt retry', async () => {
     const submissions: Array<{ readonly sessionId: string; readonly text: string; readonly operationId: string }> = []
     let attempts = 0

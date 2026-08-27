@@ -1,4 +1,4 @@
-import { capabilities, nativeAttempt, operation, type Binding, type Claim, type Delivery, type Lease, type Message } from './protocol.ts'
+import { capabilities, nativeAttempt, operation, workbenchAttempt, type Binding, type Claim, type Delivery, type Lease, type Message } from './protocol.ts'
 import { addressKey, effectiveBindings, type AddressDiscovery, type AddressPlan, type DirectoryEntry, type ManagedDynamicBinding } from './addressing.ts'
 import { FabricError } from './http.ts'
 
@@ -46,7 +46,8 @@ export interface Fabric {
 
 const defaults = { adapterId: 'dsh-crew-messaging', instanceId: 'dsh-crew-messaging-local', workbenchAddress: 'dsh/workbench', codexControlUrl: 'http://127.0.0.1:8788', leaseDuration: '2m', renewMs: 45_000, pollMs: 1_000, claimDuration: '45s', ttl: '24h', acceptanceTimeoutMs: 1_000, acceptancePollMs: 10 }
 const workbenchTarget = 'dsh-crew-workbench'
-const workbenchCapabilities = ['prompt-submit']
+/** `deliver_when_idle` makes the workbench visible to Codex's dynamic crew directory. */
+const workbenchCapabilities = ['deliver_when_idle', 'workbench-inbox']
 export const CREW_WORKBENCH_PROMPT_MAX_BYTES = 16 * 1024
 export const CREW_WORKBENCH_PROMPT_TOO_LARGE = 'crew messaging: prompt must be 16 KiB or smaller'
 
@@ -73,7 +74,7 @@ export class CrewMessagingService {
     this.config = { ...defaults, url: config.url ?? 'http://127.0.0.1:8787', bindings: config.bindings ?? [], ...config }
     validateBindings(this.config.bindings)
     if (this.config.workbenchAddress.trim() === '') throw new Error('crew messaging: workbenchAddress is required')
-    if (this.config.bindings.some(binding => binding.address === this.config.workbenchAddress)) throw new Error(`crew messaging: workbenchAddress "${this.config.workbenchAddress}" cannot also bind a DSH session`)
+    if (this.config.bindings.some(binding => addressKey(binding.address) === addressKey(this.config.workbenchAddress))) throw new Error(`crew messaging: workbenchAddress "${this.config.workbenchAddress}" cannot also bind a DSH session`)
     this.configuredBindings = this.config.bindings
     this.effective = []
     this.disposeStatus = runtime.onStatus(agent => { if (agent.status === 'idle') this.observe(this.pumpAfterAddressing(agent.sessionId)) })
@@ -138,13 +139,17 @@ export class CrewMessagingService {
   private async tick(): Promise<void> {
     try {
       if (!this.initialized) { await this.initialize(); return }
-      await this.ensureLease()
+      const lease = await this.ensureLease()
+      await this.ensureWorkbenchBinding(lease, (await this.fabric.listBindings()).addresses)
       await this.enqueueAddressing()
+      await this.reconcileWorkbench()
       await Promise.all(this.effective.map(binding => this.pumpSession(binding.sessionId)))
+      await this.pumpWorkbench()
     } finally { this.schedule() }
   }
   private async initialize(): Promise<void> {
-    await this.ensureLease()
+    const lease = await this.ensureLease()
+    await this.ensureWorkbenchBinding(lease, (await this.fabric.listBindings()).addresses)
     await this.enqueueAddressing()
     await this.reconcile()
     this.initialized = true
@@ -169,7 +174,8 @@ export class CrewMessagingService {
   }
   private async refreshAddressing(): Promise<void> {
     if (this.stopped) return
-    const discovered = this.discovery === undefined ? [] : await this.discovery.discover()
+    const discovered = this.discovery === undefined ? [] : (await this.discovery.discover())
+      .filter(binding => addressKey(binding.address) !== addressKey(this.config.workbenchAddress))
     const desired = effectiveBindings(this.configuredBindings, discovered)
     await this.bind(desired)
   }
@@ -273,6 +279,26 @@ export class CrewMessagingService {
       await this.fabric.unknown(delivery.delivery_id, { adapter_id: this.config.adapterId, lease_token: lease.lease_token, operation_id: operation(delivery.delivery_id, 'unknown'), native_attempt_ref: attempt })
     }
   }
+  /** Accept one reply into the immutable workbench mailbox without touching a DSH session. */
+  private async pumpWorkbench(): Promise<void> {
+    if (this.stopped) return
+    const lease = await this.ensureLease()
+    const claimed = await this.fabric.claim({
+      adapter_id: this.config.adapterId, lease_token: lease.lease_token,
+      operation_id: operation(`${this.config.workbenchAddress}:${Date.now()}`, 'workbench-claim'),
+      recipient_address: this.config.workbenchAddress, recipient_generation: await this.generation(this.config.workbenchAddress),
+      availability: 'idle', claim_duration: this.config.claimDuration,
+    })
+    if (!claimed.claimed || claimed.delivery === undefined || claimed.claim_token === undefined) return
+    const attempt = workbenchAttempt(claimed.delivery.delivery_id)
+    await this.fabric.begin(claimed.delivery.delivery_id, {
+      adapter_id: this.config.adapterId, lease_token: lease.lease_token, operation_id: operation(claimed.delivery.delivery_id, 'workbench-begin'),
+      claim_token: claimed.claim_token, native_attempt_ref: attempt,
+    })
+    await this.fabric.acknowledge(claimed.delivery.delivery_id, {
+      adapter_id: this.config.adapterId, lease_token: lease.lease_token, operation_id: operation(claimed.delivery.delivery_id, 'workbench-ack'), native_attempt_ref: attempt,
+    })
+  }
   private release(deliveryId: string, claimToken: string, leaseToken: string): Promise<Delivery> {
     return this.fabric.release(deliveryId, { adapter_id: this.config.adapterId, lease_token: leaseToken, operation_id: operation(deliveryId, 'release'), claim_token: claimToken })
   }
@@ -287,6 +313,7 @@ export class CrewMessagingService {
   }
   private async reconcile(): Promise<void> {
     const values = await this.fabric.deliveries()
+    await this.reconcileWorkbench(values.deliveries)
     for (const delivery of values.deliveries.filter(item => item.state === 'dispatching'
       && item.claim_owner_adapter_id === this.config.adapterId
       && item.native_attempt_ref === nativeAttempt(item.delivery_id))) {
@@ -298,6 +325,17 @@ export class CrewMessagingService {
       const live = this.runtime.live(binding.sessionId)
       if (live !== undefined && !await this.runtime.flush(live)) { await this.fabric.unknown(delivery.delivery_id, body); continue }
       await this.fabric.acknowledge(delivery.delivery_id, body)
+    }
+  }
+  /** A failed acknowledgement is retried on ordinary polls; the fabric ledger is already durable. */
+  private async reconcileWorkbench(known?: readonly Delivery[]): Promise<void> {
+    const deliveries = known ?? (await this.fabric.deliveries()).deliveries
+    for (const delivery of deliveries.filter(item => item.state === 'dispatching'
+      && item.claim_owner_adapter_id === this.config.adapterId
+      && item.recipient_address === this.config.workbenchAddress
+      && item.native_attempt_ref === workbenchAttempt(item.delivery_id))) {
+      const lease = await this.ensureLease()
+      await this.fabric.acknowledge(delivery.delivery_id, { adapter_id: this.config.adapterId, lease_token: lease.lease_token, operation_id: operation(delivery.delivery_id, 'workbench-ack'), native_attempt_ref: workbenchAttempt(delivery.delivery_id) })
     }
   }
   /** Track background work and contain its rejection at timer/event boundaries. */
