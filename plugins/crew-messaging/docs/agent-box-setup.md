@@ -53,14 +53,14 @@ Then create `/home/agent/.config/systemd/user/dsh-web.service.d/crew-messaging.c
 
 ```ini
 [Unit]
-Wants=crew-messaging.service
-After=crew-messaging.service
+Wants=crew-messaging.service crew-codex.service
+After=crew-messaging.service crew-codex.service
 
 [Service]
 EnvironmentFile=/home/agent/.config/dsh/crew-messaging.env
 ```
 
-The ordering hint starts the local fabric with the web service when that user unit is installed; the adapter's normal `pollMs` initialization retry remains the race-safe path when the fabric becomes ready later.
+The ordering hint starts the local fabric and optional Codex adapter with the web service when those user units are installed; each adapter's normal polling retry remains the race-safe path when a dependency becomes ready later.
 
 Reload and restart only after those two user-owned files exist:
 

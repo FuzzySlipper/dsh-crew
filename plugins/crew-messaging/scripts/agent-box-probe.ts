@@ -194,7 +194,7 @@ async function main(): Promise<void> {
       && replyFrame.header.kind === 'reply'
       && replyFrame.header.reply_to_message_id === first.source.messageId
       && replyFrame.body === 'reply alpha', 'linked reply frame lost aliases, identity, reply metadata, or body')
-    check(replyFrame.instruction.includes(`recipient="beta"`) && replyFrame.instruction.includes(`reply_to_message_id="${reply.source.messageId}"`), 'linked reply frame lost its next-reply instruction')
+    check(replyFrame.instruction === `This is a reply acknowledging prior message "${first.source.messageId}". Do not reply merely because this message is a reply. Only if its body independently requires further work, send a new ordinary crew_message without reply_to_message_id.`, 'linked reply frame lost its terminal-by-default guidance')
 
     const beforeInspection = { alphaEvents: alpha.session.events.length, betaEvents: beta.session.events.length, deliveries: (await fabric.deliveries()).deliveries.length }
     await fabric.listBindings()
