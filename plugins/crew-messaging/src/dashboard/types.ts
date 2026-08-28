@@ -56,6 +56,44 @@ export interface CrewDashboardSnapshot {
   readonly deliveries: readonly CrewDeliverySummary[]
 }
 
+/** Safe health state for the sibling Crew review service. */
+export interface CrewReviewHealth {
+  readonly ready: boolean
+  readonly status: string
+}
+
+/** One bounded review job row; Den findings remain in Den and are not copied here. */
+export interface CrewReviewJobSummary {
+  readonly id: string
+  readonly projectId: string
+  readonly taskId: number
+  readonly reviewRoundId: number
+  readonly state: string
+  readonly verdict?: string
+  readonly failure?: string
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+/** One logical task affinity, intentionally without its private worker identity. */
+export interface CrewReviewAffinitySummary {
+  readonly projectId: string
+  readonly taskId: number
+  readonly expiresAt: string
+}
+
+/** Same-origin projection of the Crew review pool and its bounded recent evidence. */
+export interface CrewReviewDashboardSnapshot {
+  readonly health: CrewReviewHealth
+  readonly backend: string
+  readonly capacity: number
+  readonly queued: number
+  readonly running: number
+  readonly recent: readonly CrewReviewJobSummary[]
+  readonly affinities: readonly CrewReviewAffinitySummary[]
+  readonly failures: readonly CrewReviewJobSummary[]
+}
+
 /** Browser-safe projection of one adapter-owned foreign runtime session. */
 export interface CrewForeignSession {
   readonly sessionId: string

@@ -10,7 +10,7 @@ export interface CrewMessagingStatus { readonly initialized: boolean; readonly s
 export interface CrewMessagingConfig {
   url?: string; adapterId?: string; instanceId?: string; bindings?: BindingConfig[]
   workbenchAddress?: string
-	 codexControlUrl?: string
+  codexControlUrl?: string; reviewUrl?: string
   leaseDuration?: string; renewMs?: number; pollMs?: number; claimDuration?: string; ttl?: string
   acceptanceTimeoutMs?: number; acceptancePollMs?: number
 }
@@ -44,7 +44,7 @@ export interface Fabric {
   deliveries(): Promise<{ deliveries: Delivery[] }>
 }
 
-const defaults = { adapterId: 'dsh-crew-messaging', instanceId: 'dsh-crew-messaging-local', workbenchAddress: 'dsh/workbench', codexControlUrl: 'http://127.0.0.1:8788', leaseDuration: '2m', renewMs: 45_000, pollMs: 1_000, claimDuration: '45s', ttl: '24h', acceptanceTimeoutMs: 1_000, acceptancePollMs: 10 }
+const defaults = { adapterId: 'dsh-crew-messaging', instanceId: 'dsh-crew-messaging-local', workbenchAddress: 'dsh/workbench', codexControlUrl: 'http://127.0.0.1:8788', reviewUrl: 'http://127.0.0.1:8413', leaseDuration: '2m', renewMs: 45_000, pollMs: 1_000, claimDuration: '45s', ttl: '24h', acceptanceTimeoutMs: 1_000, acceptancePollMs: 10 }
 const workbenchTarget = 'dsh-crew-workbench'
 /** `deliver_when_idle` makes the workbench visible to Codex's dynamic crew directory. */
 const workbenchCapabilities = ['deliver_when_idle', 'workbench-inbox']

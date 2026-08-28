@@ -158,6 +158,7 @@ const defaults$1 = {
 	instanceId: "dsh-crew-messaging-local",
 	workbenchAddress: "dsh/workbench",
 	codexControlUrl: "http://127.0.0.1:8788",
+	reviewUrl: "http://127.0.0.1:8413",
 	leaseDuration: "2m",
 	renewMs: 45e3,
 	pollMs: 1e3,
@@ -844,7 +845,7 @@ function dashboardTuning(config) {
 /** Build the safe snapshot from one adapter and its trusted-loopback fabric. */
 async function crewDashboardSnapshot(input) {
 	const request = input.request ?? fetch;
-	const [ready, traffic] = await Promise.all([readJson(request, new URL("/readyz", input.fabricUrl)), readJson(request, new URL("/v1/traffic", input.fabricUrl))]);
+	const [ready, traffic] = await Promise.all([readJson$1(request, new URL("/readyz", input.fabricUrl)), readJson$1(request, new URL("/v1/traffic", input.fabricUrl))]);
 	return {
 		fabric: projectReadiness(ready),
 		adapter: input.adapter.status(),
@@ -878,7 +879,7 @@ function crewDashboardHandler(input) {
 		}
 	};
 }
-async function readJson(request, url) {
+async function readJson$1(request, url) {
 	const response = await request(url, {
 		headers: { accept: "application/json" },
 		signal: AbortSignal.timeout(1500)
@@ -889,7 +890,7 @@ async function readJson(request, url) {
 function projectReadiness(value) {
 	return {
 		ready: true,
-		status: text$1(object$1(value)?.status) ?? "ok"
+		status: text$2(object$2(value)?.status) ?? "ok"
 	};
 }
 function projectDirectory(value) {
@@ -900,47 +901,47 @@ function projectDirectory(value) {
 	};
 }
 function projectMessages(value) {
-	return array(object$1(value)?.messages).slice(-20).reverse().flatMap((entry) => {
-		const id = text$1(entry.message_id);
-		const from = text$1(entry.sender_address);
-		const to = text$1(entry.recipient_address);
-		const createdAt = text$1(entry.created_at);
+	return array$1(object$2(value)?.messages).slice(-20).reverse().flatMap((entry) => {
+		const id = text$2(entry.message_id);
+		const from = text$2(entry.sender_address);
+		const to = text$2(entry.recipient_address);
+		const createdAt = text$2(entry.created_at);
 		if (id === void 0 || from === void 0 || to === void 0 || createdAt === void 0) return [];
 		return [{
 			id,
 			from,
 			to,
 			createdAt,
-			preview: preview(text$1(entry.body) ?? ""),
-			...optional$1("replyTo", text$1(entry.reply_to_message_id))
+			preview: preview(text$2(entry.body) ?? ""),
+			...optional$1("replyTo", text$2(entry.reply_to_message_id))
 		}];
 	});
 }
 function projectDeliveries(value) {
-	return array(object$1(value)?.deliveries).slice(-20).reverse().flatMap((entry) => {
-		const id = text$1(entry.delivery_id);
-		const messageId = text$1(entry.message_id);
-		const recipient = text$1(entry.recipient_address);
-		const state = text$1(entry.state);
+	return array$1(object$2(value)?.deliveries).slice(-20).reverse().flatMap((entry) => {
+		const id = text$2(entry.delivery_id);
+		const messageId = text$2(entry.message_id);
+		const recipient = text$2(entry.recipient_address);
+		const state = text$2(entry.state);
 		if (id === void 0 || messageId === void 0 || recipient === void 0 || state === void 0) return [];
-		const updatedAt = text$1(entry.terminal_at) ?? text$1(entry.dispatching_at) ?? text$1(entry.claimed_at) ?? text$1(entry.created_at);
+		const updatedAt = text$2(entry.terminal_at) ?? text$2(entry.dispatching_at) ?? text$2(entry.claimed_at) ?? text$2(entry.created_at);
 		return [{
 			id,
 			messageId,
 			recipient,
 			state,
-			...optional$1("action", text$1(entry.dispatch_action)),
+			...optional$1("action", text$2(entry.dispatch_action)),
 			...optional$1("updatedAt", updatedAt)
 		}];
 	});
 }
-function object$1(value) {
+function object$2(value) {
 	return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
 }
-function array(value) {
-	return Array.isArray(value) ? value.filter((entry) => object$1(entry) !== void 0) : [];
+function array$1(value) {
+	return Array.isArray(value) ? value.filter((entry) => object$2(entry) !== void 0) : [];
 }
-function text$1(value) {
+function text$2(value) {
 	return typeof value === "string" ? value : void 0;
 }
 function optional$1(key, value) {
@@ -948,6 +949,178 @@ function optional$1(key, value) {
 }
 function preview(value) {
 	return value.length <= 160 ? value : `${value.slice(0, 157)}...`;
+}
+//#endregion
+//#region src/dashboard/review.ts
+/** Same-origin endpoint served by the DSH plugin for review observations. */
+const CREW_REVIEW_DASHBOARD_PATH = "/plugins/dsh-crew-messaging/review-pool";
+/** Same-origin endpoint used only to release one idle retained reviewer. */
+const CREW_REVIEW_AFFINITY_PATH = "/plugins/dsh-crew-messaging/review-affinity";
+/** Build the browser-safe pool projection from the review service's two reads. */
+async function crewReviewDashboardSnapshot(input) {
+	const request = input.request ?? fetch;
+	const [health, pool] = await Promise.all([readJson(request, new URL("/healthz", input.reviewUrl)), readJson(request, new URL(`/v1/review-pool?limit=${String(20)}`, input.reviewUrl))]);
+	const healthProjection = projectHealth(health);
+	const poolProjection = projectPool(pool);
+	return {
+		health: healthProjection,
+		backend: poolProjection.backend,
+		capacity: poolProjection.capacity,
+		queued: poolProjection.queued,
+		running: poolProjection.running,
+		recent: poolProjection.recent,
+		affinities: poolProjection.affinities,
+		failures: poolProjection.recent.filter((job) => job.failure !== void 0)
+	};
+}
+/** Serve the review projection without forwarding service-private fields. */
+function crewReviewDashboardHandler(input) {
+	return async (request, response) => {
+		if (request.method !== "GET") {
+			response.writeHead(405, { allow: "GET" });
+			response.end();
+			return;
+		}
+		try {
+			write$1(response, 200, await crewReviewDashboardSnapshot(input));
+		} catch {
+			write$1(response, 503, { error: "Crew review service is unavailable" });
+		}
+	};
+}
+/** Release an idle logical task affinity through the plugin-owned route. */
+function crewReviewAffinityHandler(input) {
+	return async (request, response) => {
+		if (request.method !== "DELETE") {
+			response.writeHead(405, { allow: "DELETE" });
+			response.end();
+			return;
+		}
+		const query = new URL(request.url ?? "/", "http://localhost").searchParams;
+		const projectId = query.get("project")?.trim();
+		const taskText = query.get("task")?.trim();
+		if (projectId === void 0 || projectId === "" || taskText === void 0 || taskText === "") {
+			write$1(response, 400, { error: "project and task are required" });
+			return;
+		}
+		if (!/^\d+$/.test(taskText) || Number(taskText) <= 0 || !Number.isSafeInteger(Number(taskText))) {
+			write$1(response, 400, { error: "task must be a positive integer" });
+			return;
+		}
+		const requestFn = input.request ?? fetch;
+		try {
+			const upstream = await requestFn(new URL(`/v1/review-affinities/${encodeURIComponent(projectId)}/${encodeURIComponent(taskText)}`, input.reviewUrl), {
+				method: "DELETE",
+				headers: { accept: "application/json" },
+				signal: AbortSignal.timeout(5e3)
+			});
+			if (!upstream.ok) {
+				write$1(response, upstream.status === 404 || upstream.status === 409 ? upstream.status : 503, { error: await upstreamError(upstream) });
+				return;
+			}
+			write$1(response, 200, { released: true });
+		} catch {
+			write$1(response, 503, { error: "Crew review service is unavailable" });
+		}
+	};
+}
+async function readJson(request, url) {
+	const response = await request(url, {
+		headers: { accept: "application/json" },
+		signal: AbortSignal.timeout(5e3)
+	});
+	if (!response.ok) throw new Error(`review service response ${String(response.status)}`);
+	return await response.json();
+}
+function projectHealth(value) {
+	const status = text$1(object$1(value)?.status);
+	if (status === void 0) throw new Error("invalid review health response");
+	return {
+		ready: true,
+		status
+	};
+}
+function projectPool(value) {
+	const record = object$1(value);
+	const backend = text$1(record?.backend);
+	const capacity = nonNegativeInteger(record?.capacity);
+	const queued = nonNegativeInteger(record?.queued);
+	const running = nonNegativeInteger(record?.running);
+	if (backend === void 0 || capacity === void 0 || queued === void 0 || running === void 0) throw new Error("invalid review pool response");
+	return {
+		backend,
+		capacity,
+		queued,
+		running,
+		recent: boundedArray(record?.recent, 20).flatMap(projectJob),
+		affinities: array(record?.retained_affinities).flatMap(projectAffinity)
+	};
+}
+function projectJob(value) {
+	const key = object$1(value.key);
+	const id = text$1(value.id);
+	const projectId = text$1(key?.project_id);
+	const taskId = positiveInteger(key?.task_id);
+	const reviewRoundId = positiveInteger(key?.review_round_id);
+	const state = text$1(value.state);
+	const createdAt = text$1(value.created_at);
+	const updatedAt = text$1(value.updated_at);
+	if (id === void 0 || projectId === void 0 || taskId === void 0 || reviewRoundId === void 0 || state === void 0 || createdAt === void 0 || updatedAt === void 0) return [];
+	const verdict = text$1(object$1(value.receipt)?.verdict);
+	const failure = text$1(value.failure);
+	return [{
+		id,
+		projectId,
+		taskId,
+		reviewRoundId,
+		state,
+		...verdict === void 0 ? {} : { verdict },
+		...failure === void 0 || failure === "" ? {} : { failure },
+		createdAt,
+		updatedAt
+	}];
+}
+function projectAffinity(value) {
+	const projectId = text$1(value.project_id);
+	const taskId = positiveInteger(value.task_id);
+	const expiresAt = text$1(value.expires_at);
+	return projectId === void 0 || taskId === void 0 || expiresAt === void 0 ? [] : [{
+		projectId,
+		taskId,
+		expiresAt
+	}];
+}
+function boundedArray(value, limit) {
+	return array(value).slice(0, limit);
+}
+function array(value) {
+	return Array.isArray(value) ? value.filter((entry) => object$1(entry) !== void 0) : [];
+}
+function object$1(value) {
+	return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
+}
+function text$1(value) {
+	return typeof value === "string" ? value : void 0;
+}
+function nonNegativeInteger(value) {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : void 0;
+}
+function positiveInteger(value) {
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : void 0;
+}
+async function upstreamError(response) {
+	try {
+		const error = text$1(object$1(await response.json())?.error);
+		if (error !== void 0 && error !== "") return error;
+	} catch {}
+	return `Crew review request failed (${String(response.status)})`;
+}
+function write$1(response, status, value) {
+	response.writeHead(status, {
+		"content-type": "application/json; charset=utf-8",
+		"cache-control": "no-store"
+	});
+	response.end(JSON.stringify(value));
 }
 //#endregion
 //#region src/dashboard/foreign-sessions.ts
@@ -1452,6 +1625,9 @@ var CrewMessagingProvider = class extends Service {
 			tuning: dashboardTuning(config),
 			fabricUrl: config.url ?? "http://127.0.0.1:8787"
 		});
+		const reviewUrl = config.reviewUrl ?? "http://127.0.0.1:8413";
+		const reviewDashboard = crewReviewDashboardHandler({ reviewUrl });
+		const reviewAffinity = crewReviewAffinityHandler({ reviewUrl });
 		const fabricUrl = config.url ?? "http://127.0.0.1:8787";
 		const sessions = crewForeignSessionsHandler({ fabricUrl });
 		const events = crewForeignSessionEventsHandler({ fabricUrl });
@@ -1469,6 +1645,16 @@ var CrewMessagingProvider = class extends Service {
 				path: CREW_DASHBOARD_PATH,
 				handler: dashboard
 			}), "crew-messaging: dashboard route");
+			webCtx.effect(() => webServer.register({
+				kind: "exact",
+				path: CREW_REVIEW_DASHBOARD_PATH,
+				handler: reviewDashboard
+			}), "crew-messaging: review dashboard route");
+			webCtx.effect(() => webServer.register({
+				kind: "exact",
+				path: CREW_REVIEW_AFFINITY_PATH,
+				handler: reviewAffinity
+			}), "crew-messaging: review affinity route");
 			webCtx.effect(() => webServer.register({
 				kind: "exact",
 				path: CREW_SESSIONS_PATH,

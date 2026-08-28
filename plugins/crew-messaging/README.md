@@ -30,6 +30,8 @@ Current limitation: cold recovery rejects sessions whose persisted header is exp
 
 With the Web profile, the plugin contributes **Settings → Crew**. Its dashboard polls a same-origin Host route for the effective alias directory, local fabric readiness, adapter lifecycle, the most recent 20 messages and deliveries, and the active runtime timings. A timing change still belongs in the profile configuration and takes effect after a DSH service restart. The route projects aliases, message ids, timestamps, states, and bounded message previews only; it never returns DSH session ids, fabric target references, or lease tokens.
 
+The same page includes a compact **Crew review pool** panel when the sibling `crew-review` service is available at `DSH_CREW_REVIEW_URL` (default `http://127.0.0.1:8413`). It shows service/backend state, aggregate capacity, queued and running counts, recent verdict metadata, task-affinity expiry, and actionable job failures. Findings remain in Den. Refresh re-reads the projection; **Release** only asks the service to dispose an idle retained task affinity. The projection and controls never expose Codex worker identifiers, prompts, transcripts, or Den finding details.
+
 See [the agent-box setup](docs/agent-box-setup.md) for the profile, bundle, restart, and real local fabric probe path. The sibling [crew-services runbook](../../../crew-services/docs/agent-box-runbook.md) owns the local binary and SQLite operation path.
 
 ## Foreign-session workbench

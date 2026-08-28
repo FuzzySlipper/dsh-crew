@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { apply, inject } from '../src/client/index.ts'
 import { decodeCrewDashboard } from '../src/client/CrewCockpit.tsx'
+import { decodeCrewReviewDashboard } from '../src/client/CrewReviewPanel.tsx'
 
 const snapshot = {
   fabric: { ready: true, status: 'ok' },
@@ -10,6 +11,22 @@ const snapshot = {
 }
 
 describe('Crew cockpit client', () => {
+  it('accepts the bounded review projection without exposing worker or finding data', () => {
+    const review = {
+      health: { ready: true, status: 'ok' }, backend: 'codex', capacity: 2, queued: 1, running: 1,
+      recent: [{ id: 'job-1', projectId: 'dsh-crew', taskId: 7417, reviewRoundId: 2, state: 'succeeded', verdict: 'looks_good', createdAt: '2026-08-20T00:00:00Z', updatedAt: '2026-08-20T00:01:00Z', correlationId: 'secret-correlation', findings: [{ summary: 'must stay in Den' }], threadId: 'must-not-leak' }],
+      affinities: [{ projectId: 'dsh-crew', taskId: 7417, expiresAt: '2026-08-20T12:00:00Z', threadId: 'must-not-leak' }],
+      failures: [{ id: 'job-2', projectId: 'dsh-crew', taskId: 7417, reviewRoundId: 3, state: 'failed', failure: 'profile missing', createdAt: '2026-08-20T01:00:00Z', updatedAt: '2026-08-20T01:01:00Z', threadId: 'must-not-leak' }],
+    }
+    expect(decodeCrewReviewDashboard(review)).toEqual({
+      health: { ready: true, status: 'ok' }, backend: 'codex', capacity: 2, queued: 1, running: 1,
+      recent: [{ id: 'job-1', projectId: 'dsh-crew', taskId: 7417, reviewRoundId: 2, state: 'succeeded', verdict: 'looks_good', createdAt: '2026-08-20T00:00:00Z', updatedAt: '2026-08-20T00:01:00Z' }],
+      affinities: [{ projectId: 'dsh-crew', taskId: 7417, expiresAt: '2026-08-20T12:00:00Z' }],
+      failures: [{ id: 'job-2', projectId: 'dsh-crew', taskId: 7417, reviewRoundId: 3, state: 'failed', failure: 'profile missing', createdAt: '2026-08-20T01:00:00Z', updatedAt: '2026-08-20T01:01:00Z' }],
+    })
+    expect(JSON.stringify(decodeCrewReviewDashboard(review))).not.toContain('must-not-leak')
+    expect(decodeCrewReviewDashboard({ ...review, recent: [{ ...review.recent[0], taskId: 0 }] })).toBeUndefined()
+  })
   it('accepts only complete read-only snapshots', () => {
     expect(decodeCrewDashboard(snapshot)).toMatchObject(snapshot)
     const decoded = decodeCrewDashboard({ ...snapshot, directory: [{ address: 'A', status: 'routable', source: 'session-title', sessionId: 'hidden' }] })

@@ -9,6 +9,7 @@
         instanceId: !!js process.env.DSH_CREW_MESSAGING_INSTANCE_ID || 'dsh-crew-messaging-local'
         workbenchAddress: !!js process.env.DSH_CREW_MESSAGING_WORKBENCH_ADDRESS || 'dsh/workbench'
         codexControlUrl: !!js process.env.DSH_CREW_CODEX_CONTROL_URL || 'http://127.0.0.1:8788'
+        reviewUrl: !!js process.env.DSH_CREW_REVIEW_URL || 'http://127.0.0.1:8413'
         bindings: !!js >-
           process.env.DSH_CREW_MESSAGING_BINDINGS
             ? JSON.parse(process.env.DSH_CREW_MESSAGING_BINDINGS)

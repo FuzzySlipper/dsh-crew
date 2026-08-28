@@ -14,6 +14,16 @@ declare const css: {
     readonly empty: "dsh-crew-empty";
     readonly error: "dsh-crew-error";
     readonly secondary: "dsh-crew-secondary";
+    readonly reviewHeader: "dsh-crew-review-header";
+    readonly reviewDescription: "dsh-crew-review-description";
+    readonly reviewStatus: "dsh-crew-review-status";
+    readonly reviewJobs: "dsh-crew-review-jobs";
+    readonly reviewJobRows: "dsh-crew-review-job-rows";
+    readonly reviewJobRow: "dsh-crew-review-job-row";
+    readonly reviewFailures: "dsh-crew-review-failures";
+    readonly reviewAffinities: "dsh-crew-review-affinities";
+    readonly reviewAffinityRows: "dsh-crew-review-affinity-rows";
+    readonly reviewAffinityRow: "dsh-crew-review-affinity-row";
 };
 export default css;
 //# sourceMappingURL=CrewCockpit.styles.d.ts.map

@@ -22,16 +22,323 @@ window.__ModuleLoader__.load({
 			tuning: "dsh-crew-tuning",
 			empty: "dsh-crew-empty",
 			error: "dsh-crew-error",
-			secondary: "dsh-crew-secondary"
+			secondary: "dsh-crew-secondary",
+			reviewHeader: "dsh-crew-review-header",
+			reviewDescription: "dsh-crew-review-description",
+			reviewStatus: "dsh-crew-review-status",
+			reviewJobs: "dsh-crew-review-jobs",
+			reviewJobRows: "dsh-crew-review-job-rows",
+			reviewJobRow: "dsh-crew-review-job-row",
+			reviewFailures: "dsh-crew-review-failures",
+			reviewAffinities: "dsh-crew-review-affinities",
+			reviewAffinityRows: "dsh-crew-review-affinity-rows",
+			reviewAffinityRow: "dsh-crew-review-affinity-row"
 		};
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=\"dsh-crew-messaging/cockpit\"]") === null) {
 			const tag = document.createElement("style");
 			tag.dataset.plugin = "dsh-crew-messaging";
 			tag.dataset.pluginCss = "dsh-crew-messaging/cockpit";
 			tag.textContent = `
-.dsh-crew-cockpit{display:grid;gap:20px;color:var(--dsw-alias-label-primary)}.dsh-crew-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.dsh-crew-header h2,.dsh-crew-panel h3{margin:0}.dsh-crew-header p,.dsh-crew-empty{margin:6px 0 0;color:var(--dsw-alias-label-secondary)}.dsh-crew-status,.dsh-crew-rows{display:grid;gap:8px}.dsh-crew-status{grid-template-columns:repeat(3,minmax(0,1fr))}.dsh-crew-status>div,.dsh-crew-row,.dsh-crew-traffic-row,.dsh-crew-panel{border:1px solid var(--dsw-alias-border-light);border-radius:12px}.dsh-crew-status>div{display:grid;gap:4px;padding:12px}.dsh-crew-status span,.dsh-crew-row span,.dsh-crew-traffic-row span,.dsh-crew-traffic-row small,.dsh-crew-tuning dt{color:var(--dsw-alias-label-secondary);font-size:12px}.dsh-crew-panel{padding:14px}.dsh-crew-rows{margin-top:10px}.dsh-crew-row{display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:center;padding:10px}.dsh-crew-traffic{display:grid;gap:8px;margin-top:10px}.dsh-crew-traffic-row{display:grid;gap:6px;padding:10px}.dsh-crew-traffic-row>div{display:flex;justify-content:space-between;gap:12px}.dsh-crew-traffic-row p{margin:0;white-space:pre-wrap}.dsh-crew-tuning{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 16px;margin:10px 0 0}.dsh-crew-tuning div{display:flex;justify-content:space-between;gap:8px}.dsh-crew-tuning dt,.dsh-crew-tuning dd{margin:0}.dsh-crew-good{color:var(--dsw-alias-success)}.dsh-crew-warning,.dsh-crew-error{color:var(--dsw-alias-warning)}.dsh-crew-secondary{width:fit-content;padding:6px 10px;border:1px solid var(--dsw-alias-border-light);border-radius:8px;background:transparent;color:inherit;cursor:pointer}@media(max-width:640px){.dsh-crew-status,.dsh-crew-tuning{grid-template-columns:1fr}}
+ .dsh-crew-cockpit{display:grid;gap:20px;color:var(--dsw-alias-label-primary)}.dsh-crew-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.dsh-crew-header h2,.dsh-crew-panel h3{margin:0}.dsh-crew-header p,.dsh-crew-empty{margin:6px 0 0;color:var(--dsw-alias-label-secondary)}.dsh-crew-status,.dsh-crew-rows{display:grid;gap:8px}.dsh-crew-status{grid-template-columns:repeat(3,minmax(0,1fr))}.dsh-crew-status>div,.dsh-crew-row,.dsh-crew-traffic-row,.dsh-crew-panel{border:1px solid var(--dsw-alias-border-l1);border-radius:12px}.dsh-crew-status>div{display:grid;gap:4px;padding:12px}.dsh-crew-status span,.dsh-crew-row span,.dsh-crew-traffic-row span,.dsh-crew-traffic-row small,.dsh-crew-tuning dt{color:var(--dsw-alias-label-secondary);font-size:12px}.dsh-crew-panel{padding:14px}.dsh-crew-rows{margin-top:10px}.dsh-crew-row{display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:center;padding:10px}.dsh-crew-traffic{display:grid;gap:8px;margin-top:10px}.dsh-crew-traffic-row{display:grid;gap:6px;padding:10px}.dsh-crew-traffic-row>div{display:flex;justify-content:space-between;gap:12px}.dsh-crew-traffic-row p{margin:0;white-space:pre-wrap}.dsh-crew-tuning{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 16px;margin:10px 0 0}.dsh-crew-tuning div{display:flex;justify-content:space-between;gap:8px}.dsh-crew-tuning dt,.dsh-crew-tuning dd{margin:0}.dsh-crew-good{color:var(--dsw-alias-state-success-primary)}.dsh-crew-warning{color:var(--dsw-alias-state-warn-label)}.dsh-crew-error{color:var(--dsw-alias-state-error-primary)}.dsh-crew-secondary{width:fit-content;padding:6px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:transparent;color:inherit;cursor:pointer}@media(max-width:640px){.dsh-crew-status,.dsh-crew-tuning{grid-template-columns:1fr}}
+ .dsh-crew-review-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.dsh-crew-review-header h3,.dsh-crew-review-jobs h4,.dsh-crew-review-failures h4,.dsh-crew-review-affinities h4{margin:0}.dsh-crew-review-description{margin:6px 0 0;color:var(--dsw-alias-label-secondary)}.dsh-crew-review-status{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:14px}.dsh-crew-review-status>div{display:grid;gap:4px;padding:10px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px}.dsh-crew-review-status span,.dsh-crew-review-job-row small,.dsh-crew-review-affinity-row small{color:var(--dsw-alias-label-secondary);font-size:12px}.dsh-crew-review-jobs,.dsh-crew-review-failures,.dsh-crew-review-affinities{display:grid;gap:8px;margin-top:16px}.dsh-crew-review-job-rows,.dsh-crew-review-affinity-rows{display:grid;gap:8px}.dsh-crew-review-job-row,.dsh-crew-review-affinity-row{display:grid;gap:5px;padding:10px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px}.dsh-crew-review-job-row>div{display:flex;justify-content:space-between;gap:12px}.dsh-crew-review-job-row p{margin:0;white-space:pre-wrap}.dsh-crew-review-affinity-row{grid-template-columns:1fr auto;align-items:center}.dsh-crew-review-affinity-row span{display:grid;gap:4px}@media(max-width:640px){.dsh-crew-review-status{grid-template-columns:repeat(2,minmax(0,1fr))}}
 `;
 			document.head.appendChild(tag);
+		}
+		//#endregion
+		//#region lib/client/CrewReviewPanel.js
+		/** Browser panel for the private Crew review worker pool. */
+		const CREW_REVIEW_DASHBOARD_ENDPOINT = "/plugins/dsh-crew-messaging/review-pool";
+		const CREW_REVIEW_AFFINITY_ENDPOINT = "/plugins/dsh-crew-messaging/review-affinity";
+		const POLL_MS$1 = 5e3;
+		/** Decode only the plugin-owned review projection and discard unknown fields. */
+		function decodeCrewReviewDashboard(value) {
+			if (!isObject$1(value) || !isObject$1(value.health) || typeof value.backend !== "string" || !nonNegativeInteger(value.capacity) || !nonNegativeInteger(value.queued) || !nonNegativeInteger(value.running) || typeof value.health.ready !== "boolean" || typeof value.health.status !== "string" || !Array.isArray(value.recent) || !Array.isArray(value.affinities) || !Array.isArray(value.failures)) return void 0;
+			const recent = value.recent.flatMap(reviewJob);
+			const affinities = value.affinities.flatMap(reviewAffinity);
+			const failures = value.failures.flatMap(reviewJob);
+			if (recent.length !== value.recent.length || affinities.length !== value.affinities.length || failures.length !== value.failures.length) return void 0;
+			return {
+				health: {
+					ready: value.health.ready,
+					status: value.health.status
+				},
+				backend: value.backend,
+				capacity: value.capacity,
+				queued: value.queued,
+				running: value.running,
+				recent,
+				affinities,
+				failures
+			};
+		}
+		/** Render pool health, bounded review evidence, and the idle-affinity release control. */
+		function CrewReviewPanel() {
+			const [state, setState] = (0, react.useState)({ kind: "loading" });
+			const [refresh, setRefresh] = (0, react.useState)(0);
+			const [releasing, setReleasing] = (0, react.useState)();
+			const [actionError, setActionError] = (0, react.useState)();
+			(0, react.useEffect)(() => {
+				let active = true;
+				const load = async () => {
+					try {
+						const response = await fetch(CREW_REVIEW_DASHBOARD_ENDPOINT, { cache: "no-store" });
+						if (!response.ok) throw new Error(`request failed (${String(response.status)})`);
+						const snapshot = decodeCrewReviewDashboard(await response.json());
+						if (snapshot === void 0) throw new Error("received an invalid review pool response");
+						if (active) setState({
+							kind: "ready",
+							snapshot
+						});
+					} catch (error) {
+						if (active) setState({
+							kind: "error",
+							message: error instanceof Error ? error.message : "request failed"
+						});
+					}
+				};
+				load();
+				const timer = window.setInterval(() => {
+					load();
+				}, POLL_MS$1);
+				return () => {
+					active = false;
+					window.clearInterval(timer);
+				};
+			}, [refresh]);
+			const release = async (affinity) => {
+				setReleasing(`${affinity.projectId}:${String(affinity.taskId)}`);
+				setActionError(void 0);
+				try {
+					const url = new URL(CREW_REVIEW_AFFINITY_ENDPOINT, window.location.href);
+					url.searchParams.set("project", affinity.projectId);
+					url.searchParams.set("task", String(affinity.taskId));
+					const response = await fetch(url, {
+						method: "DELETE",
+						cache: "no-store"
+					});
+					if (!response.ok) {
+						const value = await response.json().catch(() => void 0);
+						throw new Error(isObject$1(value) && typeof value.error === "string" ? value.error : `release failed (${String(response.status)})`);
+					}
+					setRefresh((value) => value + 1);
+				} catch (error) {
+					setActionError(error instanceof Error ? error.message : "release failed");
+				} finally {
+					setReleasing(void 0);
+				}
+			};
+			if (state.kind === "loading") return (0, react_jsx_runtime.jsxs)("section", {
+				className: css.panel,
+				"data-crew-review": true,
+				children: [(0, react_jsx_runtime.jsx)("h3", { children: "Crew review pool" }), (0, react_jsx_runtime.jsx)("p", {
+					className: css.empty,
+					children: "Loading review service…"
+				})]
+			});
+			if (state.kind === "error") return (0, react_jsx_runtime.jsxs)("section", {
+				className: css.panel,
+				"data-crew-review": true,
+				children: [(0, react_jsx_runtime.jsxs)("div", {
+					className: css.reviewHeader,
+					children: [(0, react_jsx_runtime.jsx)("h3", { children: "Crew review pool" }), (0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						className: css.secondary,
+						onClick: () => {
+							setRefresh((value) => value + 1);
+						},
+						children: "Refresh"
+					})]
+				}), (0, react_jsx_runtime.jsxs)("p", {
+					className: css.error,
+					children: ["Crew review service is unavailable: ", state.message]
+				})]
+			});
+			const snapshot = state.snapshot;
+			return (0, react_jsx_runtime.jsxs)("section", {
+				className: css.panel,
+				"data-crew-review": true,
+				children: [
+					(0, react_jsx_runtime.jsxs)("div", {
+						className: css.reviewHeader,
+						children: [(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("h3", { children: "Crew review pool" }), (0, react_jsx_runtime.jsx)("p", {
+							className: css.reviewDescription,
+							children: "Private reviewer workers and recent Den review outcomes. Findings stay in Den."
+						})] }), (0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							className: css.secondary,
+							onClick: () => {
+								setRefresh((value) => value + 1);
+							},
+							children: "Refresh"
+						})]
+					}),
+					(0, react_jsx_runtime.jsxs)("div", {
+						className: css.reviewStatus,
+						children: [
+							(0, react_jsx_runtime.jsx)(Status$1, {
+								label: "Service",
+								value: snapshot.health.ready ? snapshot.health.status : "unavailable",
+								good: snapshot.health.ready
+							}),
+							(0, react_jsx_runtime.jsx)(Status$1, {
+								label: "Backend",
+								value: snapshot.backend,
+								good: snapshot.backend !== "unavailable"
+							}),
+							(0, react_jsx_runtime.jsx)(Status$1, {
+								label: "Running jobs",
+								value: `${String(snapshot.running)} / ${String(snapshot.capacity)}`,
+								good: snapshot.running <= snapshot.capacity
+							}),
+							(0, react_jsx_runtime.jsx)(Status$1, {
+								label: "Queued",
+								value: String(snapshot.queued),
+								good: snapshot.queued === 0
+							})
+						]
+					}),
+					snapshot.failures.length > 0 ? (0, react_jsx_runtime.jsx)(ReviewFailures, { failures: snapshot.failures }) : null,
+					(0, react_jsx_runtime.jsx)(ReviewJobs, { jobs: snapshot.recent }),
+					(0, react_jsx_runtime.jsxs)("section", {
+						className: css.reviewAffinities,
+						children: [
+							(0, react_jsx_runtime.jsx)("h4", { children: "Retained reviewers" }),
+							snapshot.affinities.length === 0 ? (0, react_jsx_runtime.jsx)("p", {
+								className: css.empty,
+								children: "No idle task affinities."
+							}) : (0, react_jsx_runtime.jsx)("div", {
+								className: css.reviewAffinityRows,
+								children: snapshot.affinities.map((affinity) => {
+									const key = `${affinity.projectId}:${String(affinity.taskId)}`;
+									return (0, react_jsx_runtime.jsxs)("div", {
+										className: css.reviewAffinityRow,
+										children: [(0, react_jsx_runtime.jsxs)("span", { children: [(0, react_jsx_runtime.jsxs)("strong", { children: [
+											affinity.projectId,
+											" / task ",
+											String(affinity.taskId)
+										] }), (0, react_jsx_runtime.jsxs)("small", { children: ["expires ", affinity.expiresAt] })] }), (0, react_jsx_runtime.jsx)("button", {
+											type: "button",
+											className: css.secondary,
+											disabled: releasing !== void 0,
+											onClick: () => {
+												release(affinity);
+											},
+											children: releasing === key ? "Releasing…" : "Release"
+										})]
+									}, key);
+								})
+							}),
+							actionError === void 0 ? null : (0, react_jsx_runtime.jsx)("p", {
+								className: css.error,
+								children: actionError
+							})
+						]
+					})
+				]
+			});
+		}
+		function ReviewJobs({ jobs }) {
+			return (0, react_jsx_runtime.jsxs)("section", {
+				className: css.reviewJobs,
+				children: [(0, react_jsx_runtime.jsx)("h4", { children: "Recent verdicts" }), jobs.length === 0 ? (0, react_jsx_runtime.jsx)("p", {
+					className: css.empty,
+					children: "No completed review jobs."
+				}) : (0, react_jsx_runtime.jsx)("div", {
+					className: css.reviewJobRows,
+					children: jobs.map((job) => (0, react_jsx_runtime.jsxs)("article", {
+						className: css.reviewJobRow,
+						children: [
+							(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsxs)("strong", { children: [
+								job.projectId,
+								" / task ",
+								String(job.taskId)
+							] }), (0, react_jsx_runtime.jsx)("span", {
+								className: job.verdict === "looks_good" ? css.good : job.verdict === "changes_requested" ? css.warning : "",
+								children: job.verdict ?? job.state
+							})] }),
+							(0, react_jsx_runtime.jsxs)("small", { children: [
+								"round ",
+								String(job.reviewRoundId),
+								" · ",
+								job.updatedAt
+							] }),
+							job.failure === void 0 ? null : (0, react_jsx_runtime.jsx)("p", {
+								className: css.error,
+								children: job.failure
+							})
+						]
+					}, job.id))
+				})]
+			});
+		}
+		function ReviewFailures({ failures }) {
+			return (0, react_jsx_runtime.jsxs)("section", {
+				className: css.reviewFailures,
+				children: [(0, react_jsx_runtime.jsx)("h4", { children: "Action needed" }), (0, react_jsx_runtime.jsx)("div", {
+					className: css.reviewJobRows,
+					children: failures.map((job) => (0, react_jsx_runtime.jsxs)("article", {
+						className: css.reviewJobRow,
+						children: [
+							(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsxs)("strong", { children: [
+								job.projectId,
+								" / task ",
+								String(job.taskId)
+							] }), (0, react_jsx_runtime.jsx)("span", {
+								className: css.error,
+								children: job.state
+							})] }),
+							(0, react_jsx_runtime.jsx)("p", {
+								className: css.error,
+								children: job.failure ?? "Review job failed"
+							}),
+							(0, react_jsx_runtime.jsxs)("small", { children: [
+								"round ",
+								String(job.reviewRoundId),
+								" · ",
+								job.updatedAt
+							] })
+						]
+					}, `failure-${job.id}`))
+				})]
+			});
+		}
+		function Status$1({ label, value, good }) {
+			return (0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("span", { children: label }), (0, react_jsx_runtime.jsx)("strong", {
+				className: good ? css.good : css.warning,
+				children: value
+			})] });
+		}
+		function isObject$1(value) {
+			return typeof value === "object" && value !== null && !Array.isArray(value);
+		}
+		function nonNegativeInteger(value) {
+			return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+		}
+		function positiveInteger(value) {
+			return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+		}
+		function reviewJob(value) {
+			if (!isObject$1(value) || typeof value.id !== "string" || typeof value.projectId !== "string" || !positiveInteger(value.taskId) || !positiveInteger(value.reviewRoundId) || typeof value.state !== "string" || typeof value.createdAt !== "string" || typeof value.updatedAt !== "string") return [];
+			const verdict = typeof value.verdict === "string" ? value.verdict : void 0;
+			const failure = typeof value.failure === "string" && value.failure !== "" ? value.failure : void 0;
+			return [{
+				id: value.id,
+				projectId: value.projectId,
+				taskId: value.taskId,
+				reviewRoundId: value.reviewRoundId,
+				state: value.state,
+				...verdict === void 0 ? {} : { verdict },
+				...failure === void 0 ? {} : { failure },
+				createdAt: value.createdAt,
+				updatedAt: value.updatedAt
+			}];
+		}
+		function reviewAffinity(value) {
+			return isObject$1(value) && typeof value.projectId === "string" && positiveInteger(value.taskId) && typeof value.expiresAt === "string" ? [{
+				projectId: value.projectId,
+				taskId: value.taskId,
+				expiresAt: value.expiresAt
+			}] : [];
 		}
 		//#endregion
 		//#region lib/client/CrewCockpit.js
@@ -106,23 +413,27 @@ window.__ModuleLoader__.load({
 					window.clearInterval(timer);
 				};
 			}, [retry]);
-			if (state.kind === "loading") return (0, react_jsx_runtime.jsx)("section", {
+			if (state.kind === "loading") return (0, react_jsx_runtime.jsxs)("section", {
 				className: css.section,
-				children: (0, react_jsx_runtime.jsx)("p", { children: "Loading Crew messaging…" })
+				children: [(0, react_jsx_runtime.jsx)("p", { children: "Loading Crew messaging…" }), (0, react_jsx_runtime.jsx)(CrewReviewPanel, {})]
 			});
 			if (state.kind === "error") return (0, react_jsx_runtime.jsxs)("section", {
 				className: css.section,
-				children: [(0, react_jsx_runtime.jsxs)("p", {
-					className: css.error,
-					children: ["Crew messaging is unavailable: ", state.message]
-				}), (0, react_jsx_runtime.jsx)("button", {
-					type: "button",
-					className: css.secondary,
-					onClick: () => {
-						setRetry((value) => value + 1);
-					},
-					children: "Retry"
-				})]
+				children: [
+					(0, react_jsx_runtime.jsxs)("p", {
+						className: css.error,
+						children: ["Crew messaging is unavailable: ", state.message]
+					}),
+					(0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						className: css.secondary,
+						onClick: () => {
+							setRetry((value) => value + 1);
+						},
+						children: "Retry"
+					}),
+					(0, react_jsx_runtime.jsx)(CrewReviewPanel, {})
+				]
 			});
 			return (0, react_jsx_runtime.jsx)(SnapshotView, { snapshot: state.snapshot });
 		}
@@ -221,7 +532,8 @@ window.__ModuleLoader__.load({
 							className: css.tuning,
 							children: Object.entries(snapshot.tuning).map(([key, value]) => (0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("dt", { children: key }), (0, react_jsx_runtime.jsx)("dd", { children: String(value) })] }, key))
 						})
-					})
+					}),
+					(0, react_jsx_runtime.jsx)(CrewReviewPanel, {})
 				]
 			});
 		}

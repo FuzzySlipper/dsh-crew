@@ -10,6 +10,7 @@ export DSH_CREW_MESSAGING_ADAPTER_ID=dsh-crew-messaging
 export DSH_CREW_MESSAGING_INSTANCE_ID="$(hostname)-dsh-crew"
 export DSH_CREW_MESSAGING_WORKBENCH_ADDRESS=dsh/workbench
 export DSH_CREW_MESSAGING_BINDINGS='[{"address":"alpha","sessionId":"<root-session-id-a>"},{"address":"beta","sessionId":"<root-session-id-b>"}]'
+export DSH_CREW_REVIEW_URL=http://127.0.0.1:8413
 
 ```
 
@@ -45,6 +46,7 @@ DSH_CREW_MESSAGING_ADAPTER_ID=dsh-crew-messaging
 DSH_CREW_MESSAGING_INSTANCE_ID=agent-box-web
 DSH_CREW_MESSAGING_WORKBENCH_ADDRESS=dsh/workbench
 DSH_CREW_MESSAGING_BINDINGS='[{"address":"alpha","sessionId":"<root-session-id-a>"},{"address":"beta","sessionId":"<root-session-id-b>"}]'
+DSH_CREW_REVIEW_URL=http://127.0.0.1:8413
 ```
 
 The outer single quotes are `EnvironmentFile` syntax and are stripped by systemd, preserving the JSON's inner double quotes in the value delivered to the web service.
