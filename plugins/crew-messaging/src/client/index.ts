@@ -1,6 +1,7 @@
 /** Browser half of the Crew messaging plugin. */
 
 import { CrewCockpit } from './CrewCockpit.tsx'
+import { CrewReviewPanel } from './CrewReviewPanel.tsx'
 import { CrewSessionWorkbenchController, createCrewSessionWorkbenchPort } from './CrewSessionWorkbench.ts'
 import { installCrewSessionWorkbenchStyle } from './CrewSessionWorkbench.styles.ts'
 import { CrewSessionWorkbenchOverlay, CrewSessionWorkbenchTrigger } from './CrewSessionWorkbenchView.tsx'
@@ -20,11 +21,14 @@ interface ClientContext {
 /** The services required to contribute a global Settings section. */
 export const inject = ['slots']
 
-/** Register the read-only Crew cockpit once the Settings shell is present. */
+/** Register independent messaging and review settings once the shell is present. */
 export function apply(ctx: ClientContext): void {
   ctx.slots.inject('settings.section', () => ctx.slots.register({
-    name: 'settings.section', id: 'crew-messaging', order: 35, label: 'Crew',
+    name: 'settings.section', id: 'crew-messaging', order: 35, label: 'Crew messaging',
   }, CrewCockpit))
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section', id: 'crew-review', order: 36, label: 'Crew review',
+  }, CrewReviewPanel))
   const controller = new CrewSessionWorkbenchController(createCrewSessionWorkbenchPort(), error => { ctx.logger.warn(error) })
   ctx.effect(() => {
     if (typeof document === 'undefined') return () => { controller.dispose() }

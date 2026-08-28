@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { CrewDashboardSnapshot } from '../dashboard/types.ts'
 import css from './CrewCockpit.styles.ts'
-import { CrewReviewPanel } from './CrewReviewPanel.tsx'
 
 export const CREW_DASHBOARD_ENDPOINT = '/plugins/dsh-crew-messaging/dashboard'
 const POLL_MS = 5_000
@@ -59,8 +58,8 @@ export function CrewCockpit(): ReactNode {
     const timer = window.setInterval(() => { void load() }, POLL_MS)
     return () => { active = false; window.clearInterval(timer) }
   }, [retry])
-  if (state.kind === 'loading') return <section className={css.section}><p>Loading Crew messaging…</p><CrewReviewPanel /></section>
-  if (state.kind === 'error') return <section className={css.section}><p className={css.error}>Crew messaging is unavailable: {state.message}</p><button type="button" className={css.secondary} onClick={() => { setRetry(value => value + 1) }}>Retry</button><CrewReviewPanel /></section>
+  if (state.kind === 'loading') return <section className={css.section}><p>Loading Crew messaging…</p></section>
+  if (state.kind === 'error') return <section className={css.section}><p className={css.error}>Crew messaging is unavailable: {state.message}</p><button type="button" className={css.secondary} onClick={() => { setRetry(value => value + 1) }}>Retry</button></section>
   return <SnapshotView snapshot={state.snapshot} />
 }
 
@@ -72,7 +71,6 @@ function SnapshotView({ snapshot }: { readonly snapshot: CrewDashboardSnapshot }
     <Panel title="Recent messages" empty="No recent Crew messages." hasItems={snapshot.messages.length > 0}><div className={css.traffic}>{snapshot.messages.map(message => <article className={css.trafficRow} key={message.id}><div><strong>{message.from} → {message.to}</strong><span>{message.createdAt}</span></div><p>{message.preview || '(empty message)'}</p><small>{message.id}{message.replyTo === undefined ? '' : ` · reply to ${message.replyTo}`}</small></article>)}</div></Panel>
     <Panel title="Recent deliveries" empty="No recent Crew deliveries." hasItems={snapshot.deliveries.length > 0}><div className={css.traffic}>{snapshot.deliveries.map(delivery => <article className={css.trafficRow} key={delivery.id}><div><strong>{delivery.recipient}</strong><span className={delivery.state === 'delivered' ? css.good : css.warning}>{delivery.state}</span></div><small>{delivery.messageId}{delivery.action === undefined ? '' : ` · ${delivery.action}`}{delivery.updatedAt === undefined ? '' : ` · ${delivery.updatedAt}`}</small></article>)}</div></Panel>
     <Panel title="Runtime tuning" empty="" hasItems><dl className={css.tuning}>{Object.entries(snapshot.tuning).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{String(value)}</dd></div>)}</dl></Panel>
-    <CrewReviewPanel />
   </section>
 }
 

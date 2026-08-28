@@ -37,8 +37,18 @@ export async function crewReviewDashboardSnapshot(input: {
     active: poolProjection.active,
     recent: poolProjection.recent,
     affinities: poolProjection.affinities,
-    failures: poolProjection.recent.filter(job => job.failure !== undefined),
+    failures: unresolvedFailures([...poolProjection.active, ...poolProjection.recent]),
   }
+}
+
+function unresolvedFailures(jobs: readonly CrewReviewJobSummary[]): readonly CrewReviewJobSummary[] {
+  const newest = new Map<string, CrewReviewJobSummary>()
+  for (const job of jobs) {
+    const key = `${job.projectId}\u0000${String(job.taskId)}`
+    const current = newest.get(key)
+    if (current === undefined || job.reviewRoundId > current.reviewRoundId) newest.set(key, job)
+  }
+  return [...newest.values()].filter(job => job.state === 'failed' && job.failure !== undefined)
 }
 
 /** Serve the review projection without forwarding service-private fields. */

@@ -34,7 +34,7 @@ check gate must pass before the job is admitted.
 
 DSH does not run reviews. The `dsh-crew-messaging` Web plugin proxies the
 service's bounded pool projection through a same-origin Host route and shows it
-under **Settings -> Crew**. It exposes capacity, queue/running/finalizing counts, active jobs, recent
+under **Settings -> Crew review**. It exposes capacity, queue/running/finalizing counts, active jobs, recent
 results, retained task-affinity expiry, and failures, but not Codex thread IDs,
 prompts, transcripts, or Den finding details. Set
 `DSH_CREW_REVIEW_URL=http://127.0.0.1:8413` in the DSH service environment when

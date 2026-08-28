@@ -43,6 +43,25 @@ describe('Crew review dashboard host projection', () => {
     await expect(crewReviewDashboardSnapshot({ reviewUrl: 'http://127.0.0.1:8413', request: async url => url.pathname === '/healthz' ? json({ status: 'ok' }) : json({ backend: 'codex' }) })).rejects.toThrow('invalid review pool response')
   })
 
+  it('clears historical failures after a newer round becomes active or succeeds', async () => {
+    const pool = (newest: Record<string, unknown>): Record<string, unknown> => ({
+      backend: 'codex', capacity: 2, queued: 0, running: 0, finalizing: 0,
+      active: newest.state === 'running' ? [newest] : [],
+      recent: [
+        ...(newest.state === 'running' ? [] : [newest]),
+        { id: 'failed-old', key: { project_id: 'p', task_id: 1, review_round_id: 2 }, state: 'failed', failure: 'old failure', created_at: 'before', updated_at: 'before' },
+        { id: 'stale', key: { project_id: 'q', task_id: 2, review_round_id: 7 }, state: 'stale', failure: 'superseded', created_at: 'before', updated_at: 'now' },
+      ], retained_affinities: [],
+    })
+    for (const newest of [
+      { id: 'active-new', key: { project_id: 'p', task_id: 1, review_round_id: 3 }, state: 'running', created_at: 'now', updated_at: 'now' },
+      { id: 'success-new', key: { project_id: 'p', task_id: 1, review_round_id: 3 }, state: 'succeeded', created_at: 'now', updated_at: 'now' },
+    ]) {
+      const snapshot = await crewReviewDashboardSnapshot({ reviewUrl: 'http://127.0.0.1:8413', request: async url => url.pathname === '/healthz' ? json({ status: 'ok' }) : json(pool(newest)) })
+      expect(snapshot.failures).toEqual([])
+    }
+  })
+
   it('keeps the projection GET-only and maps service outages to 503', async () => {
     const writes: unknown[][] = []
     const response = { writeHead: (...args: unknown[]) => { writes.push(args) }, end: () => {} }

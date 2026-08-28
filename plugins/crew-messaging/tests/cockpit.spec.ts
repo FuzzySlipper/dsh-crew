@@ -37,34 +37,37 @@ describe('Crew cockpit client', () => {
     expect(decodeCrewDashboard({ ...snapshot, deliveries: [{ id: 'd', messageId: 'm', recipient: 'B' }] })).toBeUndefined()
   })
 
-  it('registers and disposes the global Settings section through the slot convention', () => {
-    let registration: { readonly id: string; readonly order: number; readonly label: string } | undefined
-    const injected = new Map<string, () => void>()
-    const dispose = () => { registration = undefined }
+  it('registers and disposes independent messaging and review Settings sections', () => {
+    const registrations: Array<{ readonly id: string; readonly order: number; readonly label: string }> = []
+    const settings: Array<() => () => void> = []
     apply({ slots: {
-      inject: (name, callback) => { injected.set(name, callback) },
-      register: (options) => { registration = options; return dispose },
+      inject: (name, callback) => { if (name === 'settings.section') settings.push(callback) },
+      register: (options) => { registrations.push(options); return () => { registrations.splice(registrations.findIndex(item => item.id === options.id), 1) } },
     }, logger: { warn: () => {} }, effect: effect => { void effect() } })
     expect(inject).toEqual(['slots'])
-    expect(injected.get('settings.section')).toBeTypeOf('function')
-    const disposer = injected.get('settings.section')!()
-    expect(registration).toEqual({ name: 'settings.section', id: 'crew-messaging', order: 35, label: 'Crew' })
-    disposer()
-    expect(registration).toBeUndefined()
+    expect(settings).toHaveLength(2)
+    const disposers = settings.map(register => register())
+    expect(registrations).toEqual([
+      { name: 'settings.section', id: 'crew-messaging', order: 35, label: 'Crew messaging' },
+      { name: 'settings.section', id: 'crew-review', order: 36, label: 'Crew review' },
+    ])
+    for (const dispose of disposers) dispose()
+    expect(registrations).toEqual([])
   })
 
   it('keeps the cockpit and adds independent footer and overlay registrations', () => {
-    const injected = new Map<string, () => void>()
+    const injected = new Map<string, Array<() => void>>()
     const registrations: Array<{ readonly name: string; readonly id: string }> = []
     apply({ slots: {
-      inject: (name, callback) => { injected.set(name, callback) },
+      inject: (name, callback) => { const callbacks = injected.get(name) ?? []; callbacks.push(callback); injected.set(name, callbacks) },
       register: options => { registrations.push(options); return () => {} },
     }, logger: { warn: () => {} }, effect: effect => { void effect() } })
-    injected.get('settings.section')!()
-    injected.get('sidebar.footer.action')!()
-    injected.get('shell.overlay')!()
+    for (const callback of injected.get('settings.section') ?? []) callback()
+    injected.get('sidebar.footer.action')?.[0]?.()
+    injected.get('shell.overlay')?.[0]?.()
     expect(registrations.map(({ name, id }) => ({ name, id }))).toEqual([
       { name: 'settings.section', id: 'crew-messaging' },
+      { name: 'settings.section', id: 'crew-review' },
       { name: 'sidebar.footer.action', id: 'crew-messaging-sessions' },
       { name: 'shell.overlay', id: 'crew-messaging-sessions' },
     ])

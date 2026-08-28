@@ -82,6 +82,8 @@ export interface CrewReviewDashboardSnapshot {
     readonly capacity: number;
     readonly queued: number;
     readonly running: number;
+    readonly finalizing: number;
+    readonly active: readonly CrewReviewJobSummary[];
     readonly recent: readonly CrewReviewJobSummary[];
     readonly affinities: readonly CrewReviewAffinitySummary[];
     readonly failures: readonly CrewReviewJobSummary[];

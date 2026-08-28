@@ -971,8 +971,17 @@ async function crewReviewDashboardSnapshot(input) {
 		active: poolProjection.active,
 		recent: poolProjection.recent,
 		affinities: poolProjection.affinities,
-		failures: poolProjection.recent.filter((job) => job.failure !== void 0)
+		failures: unresolvedFailures([...poolProjection.active, ...poolProjection.recent])
 	};
+}
+function unresolvedFailures(jobs) {
+	const newest = /* @__PURE__ */ new Map();
+	for (const job of jobs) {
+		const key = `${job.projectId}\u0000${String(job.taskId)}`;
+		const current = newest.get(key);
+		if (current === void 0 || job.reviewRoundId > current.reviewRoundId) newest.set(key, job);
+	}
+	return [...newest.values()].filter((job) => job.state === "failed" && job.failure !== void 0);
 }
 /** Serve the review projection without forwarding service-private fields. */
 function crewReviewDashboardHandler(input) {

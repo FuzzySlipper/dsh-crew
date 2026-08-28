@@ -11,7 +11,7 @@ const POLL_MS = 5_000
 
 type ReviewState =
   | { readonly kind: 'loading' }
-  | { readonly kind: 'ready'; readonly snapshot: CrewReviewDashboardSnapshot }
+  | { readonly kind: 'ready'; readonly snapshot: CrewReviewDashboardSnapshot; readonly refreshedAt: string }
   | { readonly kind: 'error'; readonly message: string }
 
 /** Decode only the plugin-owned review projection and discard unknown fields. */
@@ -55,7 +55,7 @@ export function CrewReviewPanel(): ReactNode {
         if (!response.ok) throw new Error(`request failed (${String(response.status)})`)
         const snapshot = decodeCrewReviewDashboard(await response.json())
         if (snapshot === undefined) throw new Error('received an invalid review pool response')
-        if (active) setState({ kind: 'ready', snapshot })
+        if (active) setState({ kind: 'ready', snapshot, refreshedAt: new Date().toLocaleTimeString() })
       } catch (error: unknown) {
         if (active) setState({ kind: 'error', message: error instanceof Error ? error.message : 'request failed' })
       }
@@ -91,7 +91,7 @@ export function CrewReviewPanel(): ReactNode {
 
   const snapshot = state.snapshot
   return <section className={css.panel} data-crew-review>
-    <div className={css.reviewHeader}><div><h3>Crew review pool</h3><p className={css.reviewDescription}>Private reviewer workers and recent Den review outcomes. Findings stay in Den.</p></div><button type="button" className={css.secondary} onClick={() => { setRefresh(value => value + 1) }}>Refresh</button></div>
+    <div className={css.reviewHeader}><div><h3>Crew review pool</h3><p className={css.reviewDescription}>Private reviewer workers and recent Den review outcomes. Findings stay in Den. Last refreshed {state.refreshedAt}.</p></div><button type="button" className={css.secondary} onClick={() => { setRefresh(value => value + 1) }}>Refresh status</button></div>
     <div className={css.reviewStatus}>
       <Status label="Service" value={snapshot.health.ready ? snapshot.health.status : 'unavailable'} good={snapshot.health.ready} />
       <Status label="Backend" value={snapshot.backend} good={snapshot.backend !== 'unavailable'} />
@@ -99,7 +99,7 @@ export function CrewReviewPanel(): ReactNode {
       <Status label="Finalizing" value={String(snapshot.finalizing)} good={snapshot.finalizing === 0} />
       <Status label="Queued" value={String(snapshot.queued)} good={snapshot.queued === 0} />
     </div>
-    {snapshot.failures.length > 0 ? <ReviewFailures failures={snapshot.failures} /> : null}
+    {snapshot.failures.length > 0 ? <ReviewFailures failures={snapshot.failures} /> : <p className={css.empty}>No unresolved review failures.</p>}
     <ReviewJobs title="Active jobs" empty="No active review jobs." jobs={snapshot.active} />
     <ReviewJobs jobs={snapshot.recent} />
     <section className={css.reviewAffinities}><h4>Retained reviewers</h4>{snapshot.affinities.length === 0 ? <p className={css.empty}>No idle task affinities.</p> : <div className={css.reviewAffinityRows}>{snapshot.affinities.map(affinity => {

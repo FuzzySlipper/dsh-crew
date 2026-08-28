@@ -37,7 +37,7 @@ interface ClientContext {
 }
 /** The services required to contribute a global Settings section. */
 export declare const inject: string[];
-/** Register the read-only Crew cockpit once the Settings shell is present. */
+/** Register independent messaging and review settings once the shell is present. */
 export declare function apply(ctx: ClientContext): void;
 export {};
 //# sourceMappingURL=index.d.ts.map

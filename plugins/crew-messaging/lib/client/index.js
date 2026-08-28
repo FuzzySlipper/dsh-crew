@@ -1,15 +1,19 @@
 /** Browser half of the Crew messaging plugin. */
 import { CrewCockpit } from "./CrewCockpit.js";
+import { CrewReviewPanel } from "./CrewReviewPanel.js";
 import { CrewSessionWorkbenchController, createCrewSessionWorkbenchPort } from "./CrewSessionWorkbench.js";
 import { installCrewSessionWorkbenchStyle } from "./CrewSessionWorkbench.styles.js";
 import { CrewSessionWorkbenchOverlay, CrewSessionWorkbenchTrigger } from "./CrewSessionWorkbenchView.js";
 /** The services required to contribute a global Settings section. */
 export const inject = ['slots'];
-/** Register the read-only Crew cockpit once the Settings shell is present. */
+/** Register independent messaging and review settings once the shell is present. */
 export function apply(ctx) {
     ctx.slots.inject('settings.section', () => ctx.slots.register({
-        name: 'settings.section', id: 'crew-messaging', order: 35, label: 'Crew',
+        name: 'settings.section', id: 'crew-messaging', order: 35, label: 'Crew messaging',
     }, CrewCockpit));
+    ctx.slots.inject('settings.section', () => ctx.slots.register({
+        name: 'settings.section', id: 'crew-review', order: 36, label: 'Crew review',
+    }, CrewReviewPanel));
     const controller = new CrewSessionWorkbenchController(createCrewSessionWorkbenchPort(), error => { ctx.logger.warn(error); });
     ctx.effect(() => {
         if (typeof document === 'undefined')
