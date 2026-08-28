@@ -14,8 +14,10 @@ Den submit_task_for_review
 `crew-review` is a user service on the agent box. It listens only on
 `127.0.0.1:8413`, keeps its durable submission/job ledger in
 `~/.local/state/crew-review/crew-review.sqlite`, and starts private ephemeral
-Codex threads with `/home/agents/profiles/reviewer/SOUL.md`. A changes-requested
-reviewer can be retained for the same Den task for up to 12 hours; terminal
+Codex threads with `/home/system/crew-services/reviewer.md`. Ordinary service
+settings, including the reviewer model and reasoning effort, live beside it in
+`/home/system/crew-services/crew-review.env`. A changes-requested reviewer can
+be retained for the same Den task for up to 12 hours; terminal
 completion, expiry, explicit release, or process restart disposes it.
 
 `crew-review-den-tunnel.service` runs a persistent reverse SSH tunnel:
