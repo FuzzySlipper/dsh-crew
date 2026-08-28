@@ -83,6 +83,10 @@ records why the first non-DSH slice should bridge `crew-services` into Rusty
 Crew direct-brain sessions, leaving Crew's session/wake authority intact and
 deferring managed Codex thread/turn reconciliation to a second slice.
 
+[Crew Review live deployment](docs/crew-review-live-deployment.md) records the
+current split-host review route, user services, DSH pool projection, and the
+small operator readback/update path.
+
 ## Shared product scenario
 
 The experiments should eventually converge on one credible end-to-end scenario:
