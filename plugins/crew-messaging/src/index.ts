@@ -6,7 +6,6 @@ import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import { foldSessionTitle } from '@deepseek-ai/dsh-session-title'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import { FabricClient } from './http.ts'
@@ -23,6 +22,13 @@ import {
 import { CodexControlClient, codexControlHandler, CREW_CODEX_CAPABILITIES_PATH, CREW_CODEX_CREATE_PATH, CREW_CODEX_INTERRUPT_PATH, CREW_CODEX_INTERACTIONS_PATH, CREW_CODEX_RESPOND_PATH } from './dashboard/codex-controls.ts'
 
 interface WebRouteHost { register(route: { kind: 'exact'; path: string; handler: (request: import('node:http').IncomingMessage, response: import('node:http').ServerResponse) => void | Promise<void> }): () => void }
+interface SessionQueryHost {
+  observeSession(sessionId: SessionId): Promise<{
+    readonly header: { readonly origin?: 'subagent' }
+    readonly projections?: { readonly values: { readonly agentPreset?: string | null } }
+    [Symbol.dispose](): void
+  }>
+}
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -165,12 +171,15 @@ class DshRuntime implements AddressDiscovery {
   private async resumeExact(sessionId: string): Promise<Agent | undefined> {
     const id = sessionId as SessionId
     const existing = this.root(sessionId); if (existing !== undefined) return existing
-    const persistence = this.ctx.get('sessionPersistence')
-    if (persistence === undefined) return undefined
-    const inspected = await persistence.inspect(id)
-    if (inspected.meta.origin === 'subagent') return undefined
+    // Session query is an optional host capability for this out-of-tree plugin;
+    // its observation projection is the current DSH authority for preset state.
+    const query = (this.ctx as unknown as { get(name: 'sessionQuery'): SessionQueryHost | undefined }).get('sessionQuery')
+    if (query === undefined) return undefined
+    using observed = await query.observeSession(id)
+    if (observed.header.origin === 'subagent') return undefined
     const afterInspect = this.root(sessionId); if (afterInspect !== undefined) return afterInspect
-    const preset = resolveSessionPreset({ header: inspected.meta, events: inspected.events })
+    if (observed.projections === undefined) throw new Error(`session ${sessionId} observation omitted projections`)
+    const preset = observed.projections.values.agentPreset ?? undefined
     const presets = this.ctx.get('agentPresets')
     try {
       const handle = await this.ctx.agents.resume({

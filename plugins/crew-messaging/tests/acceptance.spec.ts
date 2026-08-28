@@ -18,6 +18,8 @@ describe('acceptedMessages', () => {
     const source = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8')
     const tools = await readFile(new URL('../src/tools.ts', import.meta.url), 'utf8')
     expect(source).toContain("this.ctx.agents.roots().find(agent => agent.id === sessionId as SessionId)")
+    expect(source).toContain("observed.projections.values.agentPreset")
+    expect(source).not.toContain('resolveSessionPreset')
     expect(tools).toContain("!ctx.agents.roots().includes(agent)")
   })
 })

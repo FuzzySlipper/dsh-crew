@@ -1,7 +1,6 @@
 import { Service } from "@deepseek-ai/cordis";
 import { foldSessionTitle } from "@deepseek-ai/dsh-session-title";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
-import { resolveSessionPreset } from "@deepseek-ai/dsh-agent-presets";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { Readable } from "node:stream";
 //#region src/http.ts
@@ -1853,16 +1852,14 @@ var DshRuntime = class {
 		const id = sessionId;
 		const existing = this.root(sessionId);
 		if (existing !== void 0) return existing;
-		const persistence = this.ctx.get("sessionPersistence");
-		if (persistence === void 0) return void 0;
-		const inspected = await persistence.inspect(id);
-		if (inspected.meta.origin === "subagent") return void 0;
+		const query = this.ctx.get("sessionQuery");
+		if (query === void 0) return void 0;
+		using observed = await query.observeSession(id);
+		if (observed.header.origin === "subagent") return void 0;
 		const afterInspect = this.root(sessionId);
 		if (afterInspect !== void 0) return afterInspect;
-		const preset = resolveSessionPreset({
-			header: inspected.meta,
-			events: inspected.events
-		});
+		if (observed.projections === void 0) throw new Error(`session ${sessionId} observation omitted projections`);
+		const preset = observed.projections.values.agentPreset ?? void 0;
 		const presets = this.ctx.get("agentPresets");
 		try {
 			const handle = await this.ctx.agents.resume({
