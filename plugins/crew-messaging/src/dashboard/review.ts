@@ -33,6 +33,8 @@ export async function crewReviewDashboardSnapshot(input: {
     capacity: poolProjection.capacity,
     queued: poolProjection.queued,
     running: poolProjection.running,
+    finalizing: poolProjection.finalizing,
+    active: poolProjection.active,
     recent: poolProjection.recent,
     affinities: poolProjection.affinities,
     failures: poolProjection.recent.filter(job => job.failure !== undefined),
@@ -103,6 +105,8 @@ interface PoolProjection {
   readonly capacity: number
   readonly queued: number
   readonly running: number
+  readonly finalizing: number
+  readonly active: readonly CrewReviewJobSummary[]
   readonly recent: readonly CrewReviewJobSummary[]
   readonly affinities: readonly CrewReviewAffinitySummary[]
 }
@@ -129,9 +133,13 @@ function projectPool(value: unknown): PoolProjection {
   if (backend === undefined || capacity === undefined || queued === undefined || running === undefined) {
     throw new Error('invalid review pool response')
   }
+  // Older service builds did not expose finalizing jobs. Retain read
+  // compatibility during rolling local upgrades.
+  const finalizing = nonNegativeInteger(record?.finalizing) ?? 0
+  const active = boundedArray(record?.active, CREW_REVIEW_RECENT_LIMIT).flatMap(projectJob)
   const recent = boundedArray(record?.recent, CREW_REVIEW_RECENT_LIMIT).flatMap(projectJob)
   const affinities = array(record?.retained_affinities).flatMap(projectAffinity)
-  return { backend, capacity, queued, running, recent, affinities }
+  return { backend, capacity, queued, running, finalizing, active, recent, affinities }
 }
 
 function projectJob(value: Record<string, unknown>): CrewReviewJobSummary[] {

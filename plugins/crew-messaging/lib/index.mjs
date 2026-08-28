@@ -967,6 +967,8 @@ async function crewReviewDashboardSnapshot(input) {
 		capacity: poolProjection.capacity,
 		queued: poolProjection.queued,
 		running: poolProjection.running,
+		finalizing: poolProjection.finalizing,
+		active: poolProjection.active,
 		recent: poolProjection.recent,
 		affinities: poolProjection.affinities,
 		failures: poolProjection.recent.filter((job) => job.failure !== void 0)
@@ -1051,6 +1053,8 @@ function projectPool(value) {
 		capacity,
 		queued,
 		running,
+		finalizing: nonNegativeInteger(record?.finalizing) ?? 0,
+		active: boundedArray(record?.active, 20).flatMap(projectJob),
 		recent: boundedArray(record?.recent, 20).flatMap(projectJob),
 		affinities: array(record?.retained_affinities).flatMap(projectAffinity)
 	};

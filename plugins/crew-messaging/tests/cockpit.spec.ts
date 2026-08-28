@@ -13,13 +13,15 @@ const snapshot = {
 describe('Crew cockpit client', () => {
   it('accepts the bounded review projection without exposing worker or finding data', () => {
     const review = {
-      health: { ready: true, status: 'ok' }, backend: 'codex', capacity: 2, queued: 1, running: 1,
+      health: { ready: true, status: 'ok' }, backend: 'codex', capacity: 2, queued: 1, running: 1, finalizing: 1,
+      active: [{ id: 'job-active', projectId: 'dsh-crew', taskId: 7417, reviewRoundId: 4, state: 'finalizing', createdAt: '2026-08-20T01:00:00Z', updatedAt: '2026-08-20T01:01:00Z', threadId: 'must-not-leak' }],
       recent: [{ id: 'job-1', projectId: 'dsh-crew', taskId: 7417, reviewRoundId: 2, state: 'succeeded', verdict: 'looks_good', createdAt: '2026-08-20T00:00:00Z', updatedAt: '2026-08-20T00:01:00Z', correlationId: 'secret-correlation', findings: [{ summary: 'must stay in Den' }], threadId: 'must-not-leak' }],
       affinities: [{ projectId: 'dsh-crew', taskId: 7417, expiresAt: '2026-08-20T12:00:00Z', threadId: 'must-not-leak' }],
       failures: [{ id: 'job-2', projectId: 'dsh-crew', taskId: 7417, reviewRoundId: 3, state: 'failed', failure: 'profile missing', createdAt: '2026-08-20T01:00:00Z', updatedAt: '2026-08-20T01:01:00Z', threadId: 'must-not-leak' }],
     }
     expect(decodeCrewReviewDashboard(review)).toEqual({
-      health: { ready: true, status: 'ok' }, backend: 'codex', capacity: 2, queued: 1, running: 1,
+      health: { ready: true, status: 'ok' }, backend: 'codex', capacity: 2, queued: 1, running: 1, finalizing: 1,
+      active: [{ id: 'job-active', projectId: 'dsh-crew', taskId: 7417, reviewRoundId: 4, state: 'finalizing', createdAt: '2026-08-20T01:00:00Z', updatedAt: '2026-08-20T01:01:00Z' }],
       recent: [{ id: 'job-1', projectId: 'dsh-crew', taskId: 7417, reviewRoundId: 2, state: 'succeeded', verdict: 'looks_good', createdAt: '2026-08-20T00:00:00Z', updatedAt: '2026-08-20T00:01:00Z' }],
       affinities: [{ projectId: 'dsh-crew', taskId: 7417, expiresAt: '2026-08-20T12:00:00Z' }],
       failures: [{ id: 'job-2', projectId: 'dsh-crew', taskId: 7417, reviewRoundId: 3, state: 'failed', failure: 'profile missing', createdAt: '2026-08-20T01:00:00Z', updatedAt: '2026-08-20T01:01:00Z' }],

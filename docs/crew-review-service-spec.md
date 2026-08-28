@@ -110,7 +110,7 @@ The service exposes:
 
 - `POST /v1/review-jobs` for idempotent admission;
 - `GET /v1/review-jobs/{id}` for bounded status and Den receipt handles;
-- `GET /v1/review-pool` for health, selected backend, capacity, queued/running counts, retained task affinities and expiry, recent terminal jobs, and actionable failure state;
+- `GET /v1/review-pool` for health, selected backend, capacity, queued/running/finalizing counts, bounded active jobs, retained task affinities and expiry, recent terminal jobs, and actionable failure state;
 - `DELETE /v1/review-affinities/{project}/{task}` only for releasing an idle retained reviewer.
 
 Responses never expose native Codex thread IDs, prompts/transcripts, approval payloads, Den credentials, or messaging-fabric lease data.

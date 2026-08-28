@@ -18,18 +18,22 @@ type ReviewState =
 export function decodeCrewReviewDashboard(value: unknown): CrewReviewDashboardSnapshot | undefined {
   if (!isObject(value) || !isObject(value.health) || typeof value.backend !== 'string'
     || !nonNegativeInteger(value.capacity) || !nonNegativeInteger(value.queued) || !nonNegativeInteger(value.running)
+    || !nonNegativeInteger(value.finalizing)
     || typeof value.health.ready !== 'boolean' || typeof value.health.status !== 'string'
-    || !Array.isArray(value.recent) || !Array.isArray(value.affinities) || !Array.isArray(value.failures)) return undefined
+    || !Array.isArray(value.active) || !Array.isArray(value.recent) || !Array.isArray(value.affinities) || !Array.isArray(value.failures)) return undefined
+  const active = value.active.flatMap(reviewJob)
   const recent = value.recent.flatMap(reviewJob)
   const affinities = value.affinities.flatMap(reviewAffinity)
   const failures = value.failures.flatMap(reviewJob)
-  if (recent.length !== value.recent.length || affinities.length !== value.affinities.length || failures.length !== value.failures.length) return undefined
+  if (active.length !== value.active.length || recent.length !== value.recent.length || affinities.length !== value.affinities.length || failures.length !== value.failures.length) return undefined
   return {
     health: { ready: value.health.ready, status: value.health.status },
     backend: value.backend,
     capacity: value.capacity,
     queued: value.queued,
     running: value.running,
+    finalizing: value.finalizing,
+    active,
     recent,
     affinities,
     failures,
@@ -92,9 +96,11 @@ export function CrewReviewPanel(): ReactNode {
       <Status label="Service" value={snapshot.health.ready ? snapshot.health.status : 'unavailable'} good={snapshot.health.ready} />
       <Status label="Backend" value={snapshot.backend} good={snapshot.backend !== 'unavailable'} />
       <Status label="Running jobs" value={`${String(snapshot.running)} / ${String(snapshot.capacity)}`} good={snapshot.running <= snapshot.capacity} />
+      <Status label="Finalizing" value={String(snapshot.finalizing)} good={snapshot.finalizing === 0} />
       <Status label="Queued" value={String(snapshot.queued)} good={snapshot.queued === 0} />
     </div>
     {snapshot.failures.length > 0 ? <ReviewFailures failures={snapshot.failures} /> : null}
+    <ReviewJobs title="Active jobs" empty="No active review jobs." jobs={snapshot.active} />
     <ReviewJobs jobs={snapshot.recent} />
     <section className={css.reviewAffinities}><h4>Retained reviewers</h4>{snapshot.affinities.length === 0 ? <p className={css.empty}>No idle task affinities.</p> : <div className={css.reviewAffinityRows}>{snapshot.affinities.map(affinity => {
       const key = `${affinity.projectId}:${String(affinity.taskId)}`
@@ -103,8 +109,8 @@ export function CrewReviewPanel(): ReactNode {
   </section>
 }
 
-function ReviewJobs({ jobs }: { readonly jobs: readonly CrewReviewJobSummary[] }): ReactNode {
-  return <section className={css.reviewJobs}><h4>Recent verdicts</h4>{jobs.length === 0 ? <p className={css.empty}>No completed review jobs.</p> : <div className={css.reviewJobRows}>{jobs.map(job => <article className={css.reviewJobRow} key={job.id}><div><strong>{job.projectId} / task {String(job.taskId)}</strong><span className={job.verdict === 'looks_good' ? css.good : job.verdict === 'changes_requested' ? css.warning : ''}>{job.verdict ?? job.state}</span></div><small>round {String(job.reviewRoundId)} · {job.updatedAt}</small>{job.failure === undefined ? null : <p className={css.error}>{job.failure}</p>}</article>)}</div>}</section>
+function ReviewJobs({ jobs, title = 'Recent verdicts', empty = 'No completed review jobs.' }: { readonly jobs: readonly CrewReviewJobSummary[]; readonly title?: string; readonly empty?: string }): ReactNode {
+  return <section className={css.reviewJobs}><h4>{title}</h4>{jobs.length === 0 ? <p className={css.empty}>{empty}</p> : <div className={css.reviewJobRows}>{jobs.map(job => <article className={css.reviewJobRow} key={job.id}><div><strong>{job.projectId} / task {String(job.taskId)}</strong><span className={job.verdict === 'looks_good' ? css.good : job.verdict === 'changes_requested' ? css.warning : ''}>{job.verdict ?? job.state}</span></div><small>round {String(job.reviewRoundId)} · {job.updatedAt}</small>{job.failure === undefined ? null : <p className={css.error}>{job.failure}</p>}</article>)}</div>}</section>
 }
 
 function ReviewFailures({ failures }: { readonly failures: readonly CrewReviewJobSummary[] }): ReactNode {

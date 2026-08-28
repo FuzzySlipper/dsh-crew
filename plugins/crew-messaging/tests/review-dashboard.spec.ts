@@ -11,7 +11,8 @@ describe('Crew review dashboard host projection', () => {
         calls.push(url)
         if (url.pathname === '/healthz') return json({ status: 'ok', runtime: 'private' })
         return json({
-          backend: 'codex', capacity: 2, queued: 1, running: 1,
+          backend: 'codex', capacity: 2, queued: 1, running: 1, finalizing: 1,
+          active: [{ id: 'active-1', key: { project_id: 'dsh-crew', task_id: 7417, review_round_id: 99, correlation_id: 'private' }, state: 'finalizing', created_at: 'now', updated_at: 'now', worker_thread_id: 'private' }],
           recent: Array.from({ length: CREW_REVIEW_RECENT_LIMIT + 1 }, (_, index) => ({
             id: `job-${String(index)}`,
             key: { project_id: 'dsh-crew', task_id: 7417, review_round_id: index + 1, correlation_id: 'private' },
@@ -26,6 +27,8 @@ describe('Crew review dashboard host projection', () => {
     expect(calls.find(url => url.pathname === '/v1/review-pool')?.search).toBe(`?limit=${String(CREW_REVIEW_RECENT_LIMIT)}`)
     expect(snapshot.recent).toHaveLength(CREW_REVIEW_RECENT_LIMIT)
     expect(snapshot.recent[0]).toMatchObject({ id: 'job-0', reviewRoundId: 1, verdict: 'looks_good' })
+    expect(snapshot.active).toEqual([expect.objectContaining({ id: 'active-1', state: 'finalizing' })])
+    expect(snapshot.finalizing).toBe(1)
     expect(snapshot.failures).toEqual([])
     expect(snapshot.affinities).toEqual([{ projectId: 'dsh-crew', taskId: 7417, expiresAt: '2026-08-20T12:00:00Z' }])
     expect(JSON.stringify(snapshot)).not.toContain('private')
