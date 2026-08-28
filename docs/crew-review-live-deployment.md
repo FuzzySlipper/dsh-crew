@@ -87,6 +87,8 @@ ssh den-srv curl --fail http://127.0.0.1:5199/version
 
 Den managed completion currently accepts `looks_good` and
 `changes_requested` for this service. It does not expose a separate `blocked`
-verdict through this path. A reviewer that cannot make a normal verdict must
-fail the job with actionable context; it must not translate the condition into
-a fabricated approval or finding.
+verdict through this path. Only a successful controller-bound
+`complete_review` call produces a Den verdict; ordinary final text or turn
+completion does not. A reviewer that cannot make a normal verdict must not
+fabricate an approval or finding. The pool instead records a failed job with
+the runtime failure or last rejected-completion reason for operator follow-up.
