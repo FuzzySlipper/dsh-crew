@@ -84,3 +84,9 @@ ssh den-srv curl --fail http://127.0.0.1:8413/healthz
 curl --fail http://127.0.0.1:3080/plugins/dsh-crew-messaging/review-pool
 ssh den-srv curl --fail http://127.0.0.1:5199/version
 ```
+
+Den managed completion currently accepts `looks_good` and
+`changes_requested` for this service. It does not expose a separate `blocked`
+verdict through this path. A reviewer that cannot make a normal verdict must
+fail the job with actionable context; it must not translate the condition into
+a fabricated approval or finding.
