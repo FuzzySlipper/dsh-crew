@@ -20,8 +20,10 @@ Build the local bundle and install it into the existing web profile. The plugin 
 
 ```sh
 cd /home/dev/dsh-crew
-pnpm --dir research/deepseek-harness exec tsdown --config ../../plugins/crew-messaging/tsdown.config.ts --tsconfig ../../plugins/crew-messaging/tsconfig.json
-cd /home/dev/dsh-crew/research/deepseek-harness
+DSH_SOURCE_DIR="${DSH_SOURCE_DIR:-/home/system/dsh}"
+pnpm --dir "$DSH_SOURCE_DIR" exec tsc -p /home/dev/dsh-crew/plugins/crew-messaging/tsconfig.client.json
+pnpm --dir "$DSH_SOURCE_DIR" exec tsdown --config /home/dev/dsh-crew/plugins/crew-messaging/tsdown.config.ts --tsconfig /home/dev/dsh-crew/plugins/crew-messaging/tsconfig.json
+cd "$DSH_SOURCE_DIR"
 DSH_HOME=/home/agent/.dsh pnpm dsh plugin --profile web add file:/home/dev/dsh-crew/plugins/crew-messaging
 ```
 
@@ -80,9 +82,10 @@ For a current-source check and the real local binary probe:
 
 ```sh
 cd /home/dev/dsh-crew
-pnpm --dir research/deepseek-harness exec tsc --noEmit -p ../../plugins/crew-messaging/tsconfig.json
-pnpm --dir research/deepseek-harness exec vitest run --config ../../plugins/crew-messaging/vitest.config.ts
-pnpm --dir research/deepseek-harness exec tsx ../../plugins/crew-messaging/scripts/agent-box-probe.ts
+DSH_SOURCE_DIR="${DSH_SOURCE_DIR:-/home/system/dsh}"
+pnpm --dir "$DSH_SOURCE_DIR" exec tsc --noEmit -p /home/dev/dsh-crew/plugins/crew-messaging/tsconfig.json
+pnpm --dir "$DSH_SOURCE_DIR" exec vitest run --config /home/dev/dsh-crew/plugins/crew-messaging/vitest.config.ts
+DSH_SOURCE_DIR="$DSH_SOURCE_DIR" pnpm --dir "$DSH_SOURCE_DIR" exec tsx /home/dev/dsh-crew/plugins/crew-messaging/scripts/agent-box-probe.ts
 ```
 
 The probe builds a temporary `crew-messaging` binary, starts it on a disposable loopback port with a disposable SQLite file, and joins it to a current-source keyless DSH Cordis context. That context mounts `AgentLoop`, its current test prerequisites, JSONL session persistence, the current `MockAdapter`, two actual roots, and `CrewMessagingProvider`. The Go restart readback includes bindings, messages, and deliveries. Rounds remain covered by the focused Go restart test named below.

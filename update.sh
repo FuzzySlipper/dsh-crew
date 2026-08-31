@@ -5,7 +5,7 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$SCRIPT_DIR"
-DSH_DIR="$REPO_ROOT/research/deepseek-harness"
+DSH_DIR="${DSH_SOURCE_DIR:-/home/system/dsh}"
 PLUGIN_DIR="$REPO_ROOT/plugins/crew-messaging"
 
 if [[ -n "${CREW_SERVICES_DIR:-}" && "${CREW_SERVICES_DIR}" != /* ]]; then
@@ -71,22 +71,49 @@ update_repo() {
 link_plugin_dependencies() {
   local package_name
   local package_source
+  local package_scope
+  local package_scope_dir
   local package_names
   local plugin_node_modules="$PLUGIN_DIR/node_modules"
+  local workspace_packages
+
+  workspace_packages="$(mktemp "${TMPDIR:-/tmp}/dsh-workspaces.XXXXXX")"
+  pnpm --dir "$DSH_DIR" -r list --depth -1 --json \
+    | node -e '
+      let input = ""
+      process.stdin.setEncoding("utf8")
+      process.stdin.on("data", chunk => { input += chunk })
+      process.stdin.on("end", () => {
+        for (const entry of JSON.parse(input)) console.log(`${entry.name}\t${entry.path}`)
+      })
+    ' >"$workspace_packages"
 
   package_names="$(node -e '
     const manifest = require(process.argv[1])
     const dependencies = { ...manifest.peerDependencies, ...manifest.devDependencies }
-    console.log([...new Set(Object.keys(dependencies))].join("\\n"))
+    console.log([...new Set(Object.keys(dependencies))].join("\n"))
   ' "$PLUGIN_DIR/package.json")"
 
   while IFS= read -r package_name; do
     [[ -z "$package_name" ]] && continue
-    package_source="$DSH_DIR/node_modules/$package_name"
-    [[ -e "$package_source" || -L "$package_source" ]] || continue
-    mkdir -p -- "$plugin_node_modules/$(dirname -- "$package_name")"
+    package_source="$(awk -F '\t' -v name="$package_name" '$1 == name { print $2; exit }' "$workspace_packages")"
+    if [[ -z "$package_source" ]]; then
+      package_source="$DSH_DIR/node_modules/$package_name"
+    fi
+    if [[ ! -e "$package_source" && ! -L "$package_source" ]]; then
+      package_source="$DSH_DIR/apps/web/node_modules/$package_name"
+    fi
+    [[ -e "$package_source" || -L "$package_source" ]] || die "DeepSeek Harness does not provide plugin dependency: $package_name"
+    package_scope="$(dirname -- "$package_name")"
+    package_scope_dir="$plugin_node_modules/$package_scope"
+    if [[ "$package_scope" != "." && -L "$package_scope_dir" ]]; then
+      rm -- "$package_scope_dir"
+    fi
+    mkdir -p -- "$package_scope_dir"
     ln -sfn -- "$package_source" "$plugin_node_modules/$package_name"
   done <<< "$package_names"
+
+  rm -f -- "$workspace_packages"
 }
 
 build_service() {
@@ -163,6 +190,7 @@ printf 'Linking DSH dependencies needed by the plugin build.\n'
 link_plugin_dependencies
 (
   cd -- "$DSH_DIR"
+  pnpm exec tsc -p "$PLUGIN_DIR/tsconfig.client.json"
   pnpm exec tsdown --config "$PLUGIN_DIR/tsdown.config.ts" --tsconfig "$PLUGIN_DIR/tsconfig.json"
 )
 (

@@ -7,19 +7,26 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { fileURLToPath } from 'node:url'
-import { join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
-import { CallId, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import AgentLoop from '../../../research/deepseek-harness/packages/core/agent-loop/src/index.ts'
-import { mountAgentLoopTestDependencies } from '../../../research/deepseek-harness/packages/test-support/agent-loop-testkit/src/index.ts'
-import JsonlSessionPersistence from '../../../research/deepseek-harness/packages/session/session-persistence-jsonl/src/index.ts'
-import { MockAdapter, textResponse } from '../../../research/deepseek-harness/packages/core/agent-loop/tests/mock-adapter.ts'
 import { CrewMessagingProvider, acceptedMessages } from '../src/index.ts'
 import { FabricClient } from '../src/http.ts'
+
+const dshRoot = process.env.DSH_SOURCE_DIR ?? '/home/system/dsh'
+const dshImport = (path: string) => import(pathToFileURL(resolve(dshRoot, path)).href)
+const [{ default: AgentLoop }, { mountAgentLoopTestDependencies }, { default: JsonlSessionPersistence }, { default: SessionProjectionRegistry }, { default: SqliteSessionQueryEngine }, { MockAdapter, textResponse }] = await Promise.all([
+  dshImport('packages/core/agent-loop/src/index.ts'),
+  dshImport('packages/test-support/agent-loop-testkit/src/index.ts'),
+  dshImport('packages/session/session-persistence-jsonl/src/index.ts'),
+  dshImport('packages/session/session-projection/src/index.ts'),
+  dshImport('packages/session-query/session-query-sqlite/src/index.ts'),
+  dshImport('packages/core/agent-loop/tests/mock-adapter.ts'),
+])
 
 const run = promisify(execFile)
 const serviceRepository = fileURLToPath(new URL('../../../../crew-services/', import.meta.url))
@@ -122,7 +129,7 @@ function decodeCrewFrame(message: unknown): DecodedCrewFrame {
 async function sendTool(ctx: Context, agent: Agent, call: string, recipient: string, text: string, replyToMessageId?: string): Promise<void> {
   const result = await ctx.tools.execute({
     signal: AbortSignal.timeout(2_000),
-    callId: CallId(call),
+    callId: ToolCallId(call),
     name: 'crew_message',
     arguments: { recipient, text, ...(replyToMessageId === undefined ? {} : { reply_to_message_id: replyToMessageId }) },
     agent,
@@ -155,7 +162,9 @@ async function main(): Promise<void> {
     const harness = new Context()
     ctx = harness
     await mountAgentLoopTestDependencies(harness)
+    await harness.plugin(SessionProjectionRegistry)
     await harness.plugin(JsonlSessionPersistence, { root: persistenceRoot, compression: 'none', writeBatchMaxDelayMs: 1 })
+    await harness.plugin(SqliteSessionQueryEngine, { path: join(workspace, 'session-query.sqlite'), openAt: 'never' })
     await harness.plugin(AgentLoop, { agents: [] })
     const mock = new MockAdapter(['hang', textResponse('beta ordinary'), textResponse('beta cold one'), textResponse('beta cold two')])
     harness.llm.registerAdapter(['mock'], mock)
@@ -165,7 +174,11 @@ async function main(): Promise<void> {
     const beta = betaHandle.agent
     await harness.plugin(CrewMessagingProvider, { url: baseUrl, bindings: [{ address: 'alpha', sessionId: String(alpha.id) }, { address: 'beta', sessionId: String(beta.id) }], pollMs: 20 })
     const fabric = new FabricClient(baseUrl)
-    await until('provider bindings', async () => (await fabric.listBindings()).addresses.length === 2)
+    try {
+      await until('provider bindings', async () => (await fabric.listBindings()).addresses.length === 3)
+    } catch (error: unknown) {
+      throw new Error(`provider did not publish alpha, beta, and workbench bindings: ${JSON.stringify({ status: harness.crewMessaging.status(), bindings: (await fabric.listBindings()).addresses })}`, { cause: error })
+    }
 
     alpha.followup(createUserMessage({ content: [{ type: 'text', text: 'stay busy' }], source: { kind: 'user' } }))
     await until('alpha running', () => alpha.status === 'running' && mock.requests.length === 1)
@@ -231,7 +244,7 @@ async function main(): Promise<void> {
     const bindings = await restarted.listBindings()
     const persisted = await restarted.deliveries()
     const messages = await readMessages(baseUrl)
-    check(bindings.addresses.length === 2, 'restart lost directory bindings')
+    check(bindings.addresses.length === 3, 'restart lost session or workbench bindings')
     check(persisted.deliveries.length === 4 && persisted.deliveries.every(delivery => delivery.state === 'delivered'), 'restart lost delivery records')
     check(messages.length === 4, 'restart lost immutable messages')
     console.log('agent-box probe passed: current DSH roots/tools/JSONL, exact retry, busy next-turn reply, cold FIFO resume, inspection, and SQLite restart')

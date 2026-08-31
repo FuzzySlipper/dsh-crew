@@ -12,9 +12,9 @@
     "noEmit": true,
     "ignoreDeprecations": "6.0",
     "types": ["node", "vitest/globals"],
-    "baseUrl": "../../research/deepseek-harness",
+    "baseUrl": ".",
     "paths": {
-      "@deepseek-ai/dsh-session-title": ["packages/session/session-title/lib/types/index.d.ts"]
+      "@deepseek-ai/dsh-session-title": ["node_modules/@deepseek-ai/dsh-session-title/lib/types/index.d.ts"]
     }
   },
   "include": ["src/**/*.ts", "tests/**/*.ts"],

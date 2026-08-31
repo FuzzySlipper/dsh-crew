@@ -14,12 +14,14 @@ On restart the adapter inspects its own dispatching deliveries. A proven native 
 
 ## Local current-source use
 
-From the `dsh-crew` repository root, use the nested checkout's installed toolchain:
+From the `dsh-crew` repository root, use the system checkout's installed toolchain. Override `DSH_SOURCE_DIR` on boxes that keep DSH elsewhere:
 
 ```sh
-pnpm --dir research/deepseek-harness exec tsc --noEmit -p ../../plugins/crew-messaging/tsconfig.json
-pnpm --dir research/deepseek-harness exec vitest run --config ../../plugins/crew-messaging/vitest.config.ts
-pnpm --dir research/deepseek-harness exec tsdown --config ../../plugins/crew-messaging/tsdown.config.ts --tsconfig ../../plugins/crew-messaging/tsconfig.json
+DSH_SOURCE_DIR="${DSH_SOURCE_DIR:-/home/system/dsh}"
+pnpm --dir "$DSH_SOURCE_DIR" exec tsc --noEmit -p /home/dev/dsh-crew/plugins/crew-messaging/tsconfig.json
+pnpm --dir "$DSH_SOURCE_DIR" exec vitest run --config /home/dev/dsh-crew/plugins/crew-messaging/vitest.config.ts
+pnpm --dir "$DSH_SOURCE_DIR" exec tsc -p /home/dev/dsh-crew/plugins/crew-messaging/tsconfig.client.json
+pnpm --dir "$DSH_SOURCE_DIR" exec tsdown --config /home/dev/dsh-crew/plugins/crew-messaging/tsdown.config.ts --tsconfig /home/dev/dsh-crew/plugins/crew-messaging/tsconfig.json
 ```
 
 Build the local bundle, then add it to the DSH web profile with the setup guide's explicit `file:` package spec. `dsh plugin add` reads and applies the bundle's `cordis.patch.yml`; do not apply that patch separately. The `file:` install keeps runtime peer resolution inside the profile's DSH-managed module fallback; do not substitute `link:` for the live service. The patch defaults to `http://127.0.0.1:8787`, `dsh-crew-messaging`, and one stable trusted-box instance id. Set `DSH_CREW_MESSAGING_URL`, `DSH_CREW_MESSAGING_ADAPTER_ID`, `DSH_CREW_MESSAGING_INSTANCE_ID`, and `DSH_CREW_MESSAGING_BINDINGS` (a JSON array) in the web service environment as described in [the agent-box setup](docs/agent-box-setup.md). Deployment tuning is explicit in the provider config: `leaseDuration`, `renewMs`, `pollMs`, `claimDuration`, `ttl`, `acceptanceTimeoutMs`, and `acceptancePollMs`. The bounded acceptance wait covers DSH's brief handoff between removal from the pending inbox and append of the canonical durable user message; it never retries native insertion.
