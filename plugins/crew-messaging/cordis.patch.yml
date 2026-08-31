@@ -10,6 +10,12 @@
         workbenchAddress: !!js process.env.DSH_CREW_MESSAGING_WORKBENCH_ADDRESS || 'dsh/workbench'
         codexControlUrl: !!js process.env.DSH_CREW_CODEX_CONTROL_URL || 'http://127.0.0.1:8788'
         reviewUrl: !!js process.env.DSH_CREW_REVIEW_URL || 'http://127.0.0.1:8413'
+        reviewerProfilePath: !!js process.env.DSH_CREW_REVIEWER_PROFILE_PATH || '/home/system/crew-services/reviewer.md'
+        reviewerPreset: !!js process.env.DSH_CREW_REVIEWER_PRESET || undefined
+        reviewerProvider: !!js process.env.DSH_CREW_REVIEWER_PROVIDER || undefined
+        reviewerModel: !!js process.env.DSH_CREW_REVIEWER_MODEL || undefined
+        reviewerEffort: !!js process.env.DSH_CREW_REVIEWER_EFFORT || undefined
+        reviewerCapacity: !!js Number(process.env.DSH_CREW_REVIEWER_CAPACITY || '4')
         bindings: !!js >-
           process.env.DSH_CREW_MESSAGING_BINDINGS
             ? JSON.parse(process.env.DSH_CREW_MESSAGING_BINDINGS)

@@ -20,6 +20,7 @@ import {
   crewForeignSessionEventsHandler, crewForeignSessionEventsStreamHandler, crewForeignSessionPromptHandler, crewForeignSessionsHandler, crewWorkbenchInboxHandler,
 } from './dashboard/foreign-sessions.ts'
 import { CodexControlClient, codexControlHandler, CREW_CODEX_CAPABILITIES_PATH, CREW_CODEX_CREATE_PATH, CREW_CODEX_INTERRUPT_PATH, CREW_CODEX_INTERACTIONS_PATH, CREW_CODEX_RESPOND_PATH } from './dashboard/codex-controls.ts'
+import { CREW_REVIEWER_RUNTIME_PATH, ReviewerRuntime, reviewerRuntimeHandler } from './reviewer-runtime.ts'
 
 interface WebRouteHost { register(route: { kind: 'exact'; path: string; handler: (request: import('node:http').IncomingMessage, response: import('node:http').ServerResponse) => void | Promise<void> }): () => void }
 interface SessionQueryHost {
@@ -47,10 +48,12 @@ export class CrewMessagingProvider extends Service {
   static inject = ['agents', 'sessions']
   private readonly runtime: DshRuntime
   private readonly service: CrewMessagingService
+  private readonly reviewerRuntime: ReviewerRuntime
 
   constructor(ctx: Context, config: CrewMessagingConfig = {}) {
     super(ctx, 'crewMessaging')
     this.runtime = new DshRuntime(ctx)
+    this.reviewerRuntime = new ReviewerRuntime(ctx, config)
     this.service = new CrewMessagingService(new FabricClient(config.url ?? 'http://127.0.0.1:8787'), this.runtime, config, this.runtime)
     const dashboard = crewDashboardHandler({
       adapter: this.service,
@@ -67,6 +70,7 @@ export class CrewMessagingProvider extends Service {
     const prompt = crewForeignSessionPromptHandler({ adapter: this.service })
     const inbox = crewWorkbenchInboxHandler({ fabricUrl, ...(config.workbenchAddress === undefined ? {} : { workbenchAddress: config.workbenchAddress }) })
     const controls = codexControlHandler(new CodexControlClient(config.codexControlUrl ?? 'http://127.0.0.1:8788'))
+    const reviewerRuntime = reviewerRuntimeHandler(this.reviewerRuntime)
     ctx.inject(['webServer'], webCtx => {
       const webServer = webCtx.get('webServer') as WebRouteHost
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_DASHBOARD_PATH, handler: dashboard }), 'crew-messaging: dashboard route')
@@ -82,11 +86,12 @@ export class CrewMessagingProvider extends Service {
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_CODEX_INTERRUPT_PATH, handler: controls }), 'crew-messaging: Codex interrupt route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_CODEX_INTERACTIONS_PATH, handler: controls }), 'crew-messaging: Codex interactions route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_CODEX_RESPOND_PATH, handler: controls }), 'crew-messaging: Codex response route')
+      webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_REVIEWER_RUNTIME_PATH, handler: reviewerRuntime }), 'crew-messaging: reviewer runtime route')
     })
     const disposeTools = installScopedTools(ctx, this.service)
     ctx.effect(() => {
       void this.service.start().catch(error => ctx.logger.warn(`crew messaging start: ${String(error)}`))
-      return async () => { disposeTools(); await this.service.dispose(); await this.runtime.dispose() }
+      return async () => { disposeTools(); await this.service.dispose(); await this.reviewerRuntime.dispose(); await this.runtime.dispose() }
     }, 'crewMessaging.lifecycle()')
   }
 

@@ -34,6 +34,10 @@ With the Web profile, the plugin contributes **Settings → Crew messaging**. It
 
 The plugin contributes a separate **Settings → Crew review** page when the sibling `crew-review` service is available at `DSH_CREW_REVIEW_URL` (default `http://127.0.0.1:8413`). It shows service/backend state, aggregate capacity, queued, running, and finalizing counts, bounded active job identities, recent verdict metadata, task-affinity expiry, and unresolved job failures. A failure stops being actionable when a newer round for that task is active or has completed; stale and superseded failures remain visible only in recent history. Findings remain in Den. **Refresh status** immediately re-reads the projection; **Release** only asks the service to dispose an idle retained task affinity. The projection and controls never expose Codex worker identifiers, prompts, transcripts, or Den finding details.
 
+## DSH reviewer runtime
+
+The plugin also has a loopback-only host route at `/plugins/dsh-crew-messaging/reviewer-runtime` for the local `crew-review` process. It creates hidden `origin: subagent` reviewer sessions under one cold controller, retains DSH session identities inside the plugin, and returns opaque worker IDs plus a structured `complete_review` result. `reviewerProfilePath` and positive `reviewerCapacity` are required; an optional `reviewerPreset` is mounted in the reviewer scope. Set `reviewerProvider` and `reviewerModel` together (with optional `reviewerEffort`) to choose an explicit DSH route, or set neither to inherit DSH's current default model selection.
+
 See [the agent-box setup](docs/agent-box-setup.md) for the profile, bundle, restart, and real local fabric probe path. The sibling [crew-services runbook](../../../crew-services/docs/agent-box-runbook.md) owns the local binary and SQLite operation path.
 
 ## Foreign-session workbench

@@ -13,6 +13,8 @@ export interface CrewMessagingConfig {
   codexControlUrl?: string; reviewUrl?: string
   leaseDuration?: string; renewMs?: number; pollMs?: number; claimDuration?: string; ttl?: string
   acceptanceTimeoutMs?: number; acceptancePollMs?: number
+  reviewerProfilePath?: string; reviewerPreset?: string
+  reviewerProvider?: string; reviewerModel?: string; reviewerEffort?: string; reviewerCapacity?: number
 }
 
 export interface RuntimeAgent { readonly sessionId: string; readonly status: 'idle' | 'running'; followup(message: NativeMessage): void }
@@ -71,7 +73,7 @@ export class CrewMessagingService {
   private addressingTail: Promise<void> = Promise.resolve()
 
   constructor(private readonly fabric: Fabric, private readonly runtime: CrewRuntime, config: CrewMessagingConfig = {}, private readonly discovery?: AddressDiscovery) {
-    this.config = { ...defaults, url: config.url ?? 'http://127.0.0.1:8787', bindings: config.bindings ?? [], ...config }
+    this.config = { ...defaults, url: config.url ?? 'http://127.0.0.1:8787', bindings: config.bindings ?? [], reviewerProfilePath: config.reviewerProfilePath ?? '', reviewerPreset: config.reviewerPreset ?? '', reviewerProvider: config.reviewerProvider ?? '', reviewerModel: config.reviewerModel ?? '', reviewerEffort: config.reviewerEffort ?? '', reviewerCapacity: config.reviewerCapacity ?? 0, ...config }
     validateBindings(this.config.bindings)
     if (this.config.workbenchAddress.trim() === '') throw new Error('crew messaging: workbenchAddress is required')
     if (this.config.bindings.some(binding => addressKey(binding.address) === addressKey(this.config.workbenchAddress))) throw new Error(`crew messaging: workbenchAddress "${this.config.workbenchAddress}" cannot also bind a DSH session`)

@@ -36,6 +36,12 @@ interface CrewMessagingConfig {
   ttl?: string;
   acceptanceTimeoutMs?: number;
   acceptancePollMs?: number;
+  reviewerProfilePath?: string;
+  reviewerPreset?: string;
+  reviewerProvider?: string;
+  reviewerModel?: string;
+  reviewerEffort?: string;
+  reviewerCapacity?: number;
 }
 interface NativeMessage {
   readonly id: string;
@@ -74,6 +80,7 @@ declare class CrewMessagingProvider extends Service {
   static inject: string[];
   private readonly runtime;
   private readonly service;
+  private readonly reviewerRuntime;
   constructor(ctx: Context, config?: CrewMessagingConfig);
   /** Model-safe directory projection for other same-process plugin consumers. */
   directory(): readonly DirectoryEntry[];
