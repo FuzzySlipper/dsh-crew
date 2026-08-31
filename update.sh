@@ -206,9 +206,11 @@ done
 
 phase "Restarting enabled user services"
 systemctl --user daemon-reload
-for service in "${SERVICE_NAMES[@]}"; do
-  restart_if_enabled "$service.service"
-done
+# The DSH-backed reviewer client is intentionally restarted only after the
+# plugin route is live. Messaging and Codex remain independent prerequisites.
+restart_if_enabled crew-messaging.service
+restart_if_enabled crew-codex.service
 restart_if_enabled dsh-web.service
+restart_if_enabled crew-review.service
 
 printf '\nUpdate complete. Profiles and service state databases were preserved.\n'
