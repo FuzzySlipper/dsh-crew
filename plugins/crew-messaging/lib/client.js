@@ -286,6 +286,7 @@ window.__ModuleLoader__.load({
 		/** Browser panel for the private Crew review worker pool. */
 		const CREW_REVIEW_DASHBOARD_ENDPOINT = "/plugins/dsh-crew-messaging/review-pool";
 		const CREW_REVIEW_AFFINITY_ENDPOINT = "/plugins/dsh-crew-messaging/review-affinity";
+		const CREW_REVIEW_RETRY_ENDPOINT = "/plugins/dsh-crew-messaging/review-retry";
 		const POLL_MS = 5e3;
 		/** Decode only the plugin-owned review projection and discard unknown fields. */
 		function decodeCrewReviewDashboard(value) {
@@ -316,7 +317,10 @@ window.__ModuleLoader__.load({
 			const [state, setState] = (0, react.useState)({ kind: "loading" });
 			const [refresh, setRefresh] = (0, react.useState)(0);
 			const [releasing, setReleasing] = (0, react.useState)();
-			const [actionError, setActionError] = (0, react.useState)();
+			const [retrying, setRetrying] = (0, react.useState)();
+			const retryingRef = (0, react.useRef)();
+			const [releaseError, setReleaseError] = (0, react.useState)();
+			const [retryError, setRetryError] = (0, react.useState)();
 			(0, react.useEffect)(() => {
 				let active = true;
 				const load = async () => {
@@ -348,7 +352,7 @@ window.__ModuleLoader__.load({
 			}, [refresh]);
 			const release = async (affinity) => {
 				setReleasing(`${affinity.projectId}:${String(affinity.taskId)}`);
-				setActionError(void 0);
+				setReleaseError(void 0);
 				try {
 					const url = new URL(CREW_REVIEW_AFFINITY_ENDPOINT, window.location.href);
 					url.searchParams.set("project", affinity.projectId);
@@ -363,9 +367,36 @@ window.__ModuleLoader__.load({
 					}
 					setRefresh((value) => value + 1);
 				} catch (error) {
-					setActionError(error instanceof Error ? error.message : "release failed");
+					setReleaseError(error instanceof Error ? error.message : "release failed");
 				} finally {
 					setReleasing(void 0);
+				}
+			};
+			const retry = async (job) => {
+				if (retryingRef.current !== void 0) return;
+				retryingRef.current = job.id;
+				setRetrying(job.id);
+				setRetryError(void 0);
+				try {
+					const url = new URL(CREW_REVIEW_RETRY_ENDPOINT, window.location.href);
+					url.searchParams.set("job_id", job.id);
+					const response = await fetch(url, {
+						method: "POST",
+						headers: { accept: "application/json" },
+						cache: "no-store"
+					});
+					if (!response.ok) {
+						const value = await response.json().catch(() => void 0);
+						throw new Error(isObject(value) && typeof value.error === "string" ? value.error : `retry failed (${String(response.status)})`);
+					}
+					const value = await response.json().catch(() => void 0);
+					if (!isObject(value) || value.retried !== true || !isObject(value.job) || value.job.id !== job.id) throw new Error("received an invalid review retry response");
+					setRefresh((value) => value + 1);
+				} catch (error) {
+					setRetryError(error instanceof Error ? error.message : "retry failed");
+				} finally {
+					retryingRef.current = void 0;
+					setRetrying(void 0);
 				}
 			};
 			if (state.kind === "loading") return (0, react_jsx_runtime.jsxs)("section", {
@@ -447,7 +478,12 @@ window.__ModuleLoader__.load({
 							})
 						]
 					}),
-					snapshot.failures.length > 0 ? (0, react_jsx_runtime.jsx)(ReviewFailures, { failures: snapshot.failures }) : (0, react_jsx_runtime.jsx)("p", {
+					snapshot.failures.length > 0 ? (0, react_jsx_runtime.jsx)(ReviewFailures, {
+						failures: snapshot.failures,
+						retrying,
+						error: retryError,
+						onRetry: retry
+					}) : (0, react_jsx_runtime.jsx)("p", {
 						className: css.empty,
 						children: "No unresolved review failures."
 					}),
@@ -486,9 +522,9 @@ window.__ModuleLoader__.load({
 									}, key);
 								})
 							}),
-							actionError === void 0 ? null : (0, react_jsx_runtime.jsx)("p", {
+							releaseError === void 0 ? null : (0, react_jsx_runtime.jsx)("p", {
 								className: css.error,
-								children: actionError
+								children: releaseError
 							})
 						]
 					})
@@ -529,35 +565,51 @@ window.__ModuleLoader__.load({
 				})]
 			});
 		}
-		function ReviewFailures({ failures }) {
+		function ReviewFailures({ failures, retrying, error, onRetry }) {
 			return (0, react_jsx_runtime.jsxs)("section", {
 				className: css.reviewFailures,
-				children: [(0, react_jsx_runtime.jsx)("h4", { children: "Action needed" }), (0, react_jsx_runtime.jsx)("div", {
-					className: css.reviewJobRows,
-					children: failures.map((job) => (0, react_jsx_runtime.jsxs)("article", {
-						className: css.reviewJobRow,
-						children: [
-							(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsxs)("strong", { children: [
-								job.projectId,
-								" / task ",
-								String(job.taskId)
-							] }), (0, react_jsx_runtime.jsx)("span", {
-								className: css.error,
-								children: job.state
-							})] }),
-							(0, react_jsx_runtime.jsx)("p", {
-								className: css.error,
-								children: job.failure ?? "Review job failed"
-							}),
-							(0, react_jsx_runtime.jsxs)("small", { children: [
-								"round ",
-								String(job.reviewRoundId),
-								" · ",
-								job.updatedAt
-							] })
-						]
-					}, `failure-${job.id}`))
-				})]
+				children: [
+					(0, react_jsx_runtime.jsx)("h4", { children: "Action needed" }),
+					(0, react_jsx_runtime.jsx)("div", {
+						className: css.reviewJobRows,
+						children: failures.map((job) => (0, react_jsx_runtime.jsxs)("article", {
+							className: css.reviewJobRow,
+							children: [
+								(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsxs)("strong", { children: [
+									job.projectId,
+									" / task ",
+									String(job.taskId)
+								] }), (0, react_jsx_runtime.jsx)("span", {
+									className: css.error,
+									children: job.state
+								})] }),
+								(0, react_jsx_runtime.jsx)("p", {
+									className: css.error,
+									children: job.failure ?? "Review job failed"
+								}),
+								(0, react_jsx_runtime.jsxs)("small", { children: [
+									"round ",
+									String(job.reviewRoundId),
+									" · ",
+									job.updatedAt
+								] }),
+								(0, react_jsx_runtime.jsx)("button", {
+									type: "button",
+									className: css.secondary,
+									disabled: retrying !== void 0,
+									onClick: () => {
+										onRetry(job);
+									},
+									children: retrying === job.id ? "Retrying…" : "Retry"
+								})
+							]
+						}, `failure-${job.id}`))
+					}),
+					error === void 0 ? null : (0, react_jsx_runtime.jsx)("p", {
+						className: css.error,
+						children: error
+					})
+				]
 			});
 		}
 		function Status({ label, value, good }) {

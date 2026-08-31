@@ -963,6 +963,8 @@ function preview(value) {
 const CREW_REVIEW_DASHBOARD_PATH = "/plugins/dsh-crew-messaging/review-pool";
 /** Same-origin endpoint used only to release one idle retained reviewer. */
 const CREW_REVIEW_AFFINITY_PATH = "/plugins/dsh-crew-messaging/review-affinity";
+/** Same-origin endpoint used only to retry one exact failed review job. */
+const CREW_REVIEW_RETRY_PATH = "/plugins/dsh-crew-messaging/review-retry";
 /** Build the browser-safe pool projection from the review service's two reads. */
 async function crewReviewDashboardSnapshot(input) {
 	const request = input.request ?? fetch;
@@ -1037,6 +1039,47 @@ function crewReviewAffinityHandler(input) {
 				return;
 			}
 			write$1(response, 200, { released: true });
+		} catch {
+			write$1(response, 503, { error: "Crew review service is unavailable" });
+		}
+	};
+}
+/** Retry one exact failed review job through the plugin-owned route. */
+function crewReviewRetryHandler(input) {
+	return async (request, response) => {
+		if (request.method !== "POST") {
+			response.writeHead(405, { allow: "POST" });
+			response.end();
+			return;
+		}
+		const values = new URL(request.url ?? "/", "http://localhost").searchParams.getAll("job_id");
+		const jobId = values.length === 1 ? values[0]?.trim() : void 0;
+		if (jobId === void 0 || !safeJobId(jobId)) {
+			write$1(response, 400, { error: "job_id must be a safe identifier" });
+			return;
+		}
+		const requestFn = input.request ?? fetch;
+		try {
+			const upstream = await requestFn(new URL(`/v1/review-jobs/${encodeURIComponent(jobId)}/retry`, input.reviewUrl), {
+				method: "POST",
+				headers: { accept: "application/json" },
+				signal: AbortSignal.timeout(5e3)
+			});
+			if (!upstream.ok) {
+				write$1(response, upstream.status === 404 || upstream.status === 409 ? upstream.status : 503, { error: await upstreamError(upstream) });
+				return;
+			}
+			const value = object$1(await upstream.json());
+			const job = object$1(value?.job);
+			const result = (job === void 0 ? [] : projectJob(job))[0];
+			if (value?.retried !== true || result === void 0 || result.id !== jobId) {
+				write$1(response, 503, { error: "Crew review service returned an invalid retry response" });
+				return;
+			}
+			write$1(response, 200, {
+				job: result,
+				retried: true
+			});
 		} catch {
 			write$1(response, 503, { error: "Crew review service is unavailable" });
 		}
@@ -1127,6 +1170,9 @@ function nonNegativeInteger(value) {
 }
 function positiveInteger(value) {
 	return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : void 0;
+}
+function safeJobId(value) {
+	return /^[A-Za-z0-9_-]+$/.test(value);
 }
 async function upstreamError(response) {
 	try {
@@ -2232,6 +2278,7 @@ var CrewMessagingProvider = class extends Service {
 		const reviewUrl = config.reviewUrl ?? "http://127.0.0.1:8413";
 		const reviewDashboard = crewReviewDashboardHandler({ reviewUrl });
 		const reviewAffinity = crewReviewAffinityHandler({ reviewUrl });
+		const reviewRetry = crewReviewRetryHandler({ reviewUrl });
 		const fabricUrl = config.url ?? "http://127.0.0.1:8787";
 		const sessions = crewForeignSessionsHandler({ fabricUrl });
 		const events = crewForeignSessionEventsHandler({ fabricUrl });
@@ -2260,6 +2307,11 @@ var CrewMessagingProvider = class extends Service {
 				path: CREW_REVIEW_AFFINITY_PATH,
 				handler: reviewAffinity
 			}), "crew-messaging: review affinity route");
+			webCtx.effect(() => webServer.register({
+				kind: "exact",
+				path: CREW_REVIEW_RETRY_PATH,
+				handler: reviewRetry
+			}), "crew-messaging: review retry route");
 			webCtx.effect(() => webServer.register({
 				kind: "exact",
 				path: CREW_SESSIONS_PATH,
