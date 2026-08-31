@@ -7,6 +7,8 @@ const id: string = JSON.parse(readFileSync(new URL('./package.json', import.meta
 const host: UserConfig = {
   entry: ['src/index.ts'],
   format: 'esm',
+  platform: 'node',
+  target: 'node22',
   dts: true,
   outDir: 'lib',
   clean: false,
