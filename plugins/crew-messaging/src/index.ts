@@ -14,7 +14,7 @@ import type { AddressDiscovery, DiscoveredBinding } from './addressing.ts'
 import { frameCrewDelivery } from './framing.ts'
 import { installScopedTools } from './tools.ts'
 import { CREW_DASHBOARD_PATH, crewDashboardHandler, dashboardTuning } from './dashboard/host.ts'
-import { CREW_REVIEW_AFFINITY_PATH, CREW_REVIEW_DASHBOARD_PATH, crewReviewAffinityHandler, crewReviewDashboardHandler } from './dashboard/review.ts'
+import { CREW_REVIEW_AFFINITY_PATH, CREW_REVIEW_DASHBOARD_PATH, CREW_REVIEW_RETRY_PATH, crewReviewAffinityHandler, crewReviewDashboardHandler, crewReviewRetryHandler } from './dashboard/review.ts'
 import {
   CREW_SESSION_EVENTS_PATH, CREW_SESSION_EVENTS_STREAM_PATH, CREW_SESSION_PROMPT_PATH, CREW_SESSIONS_PATH, CREW_WORKBENCH_INBOX_PATH,
   crewForeignSessionEventsHandler, crewForeignSessionEventsStreamHandler, crewForeignSessionPromptHandler, crewForeignSessionsHandler, crewWorkbenchInboxHandler,
@@ -63,6 +63,7 @@ export class CrewMessagingProvider extends Service {
     const reviewUrl = config.reviewUrl ?? 'http://127.0.0.1:8413'
     const reviewDashboard = crewReviewDashboardHandler({ reviewUrl })
     const reviewAffinity = crewReviewAffinityHandler({ reviewUrl })
+    const reviewRetry = crewReviewRetryHandler({ reviewUrl })
     const fabricUrl = config.url ?? 'http://127.0.0.1:8787'
     const sessions = crewForeignSessionsHandler({ fabricUrl })
     const events = crewForeignSessionEventsHandler({ fabricUrl })
@@ -76,6 +77,7 @@ export class CrewMessagingProvider extends Service {
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_DASHBOARD_PATH, handler: dashboard }), 'crew-messaging: dashboard route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_REVIEW_DASHBOARD_PATH, handler: reviewDashboard }), 'crew-messaging: review dashboard route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_REVIEW_AFFINITY_PATH, handler: reviewAffinity }), 'crew-messaging: review affinity route')
+      webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_REVIEW_RETRY_PATH, handler: reviewRetry }), 'crew-messaging: review retry route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_SESSIONS_PATH, handler: sessions }), 'crew-messaging: foreign sessions route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_SESSION_EVENTS_PATH, handler: events }), 'crew-messaging: foreign session events route')
       webCtx.effect(() => webServer.register({ kind: 'exact', path: CREW_SESSION_EVENTS_STREAM_PATH, handler: stream }), 'crew-messaging: foreign session event stream route')

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { CREW_REVIEW_RECENT_LIMIT, crewReviewAffinityHandler, crewReviewDashboardHandler, crewReviewDashboardSnapshot } from '../src/dashboard/review.ts'
+import { CREW_REVIEW_RECENT_LIMIT, CREW_REVIEW_RETRY_PATH, crewReviewAffinityHandler, crewReviewDashboardHandler, crewReviewDashboardSnapshot, crewReviewRetryHandler } from '../src/dashboard/review.ts'
 
 describe('Crew review dashboard host projection', () => {
   it('projects bounded pool facts and strips private worker and Den details', async () => {
@@ -90,6 +90,66 @@ describe('Crew review dashboard host projection', () => {
     await handler({ method: 'DELETE', url: '/plugins/dsh-crew-messaging/review-affinity?project=p&task=0' } as IncomingMessage, response as unknown as ServerResponse)
     expect(calls).toHaveLength(1)
     expect(writes[0]).toEqual([400, expect.anything()])
+  })
+
+  it('retries one exact safe job id and projects only browser-safe fields', async () => {
+    const calls: Array<{ url: URL; init: RequestInit | undefined }> = []
+    const request = async (url: URL, init?: RequestInit): Promise<Response> => {
+      calls.push({ url, init })
+      return json({
+        retried: true,
+        job: {
+          id: 'job-1', key: { project_id: 'p', task_id: 1, review_round_id: 2, correlation_id: 'private' }, state: 'queued',
+          failure: '', receipt: { verdict: 'looks_good', findings: ['private'] }, created_at: 'now', updated_at: 'now', worker_thread_id: 'private',
+        },
+      })
+    }
+    const writes: unknown[][] = []
+    let body = ''
+    const response = { writeHead: (...args: unknown[]) => { writes.push(args) }, end: (value?: string) => { body = value ?? '' } }
+    const handler = crewReviewRetryHandler({ reviewUrl: 'http://127.0.0.1:8413', request })
+    await handler({ method: 'POST', url: `${CREW_REVIEW_RETRY_PATH}?job_id=job-1` } as IncomingMessage, response as unknown as ServerResponse)
+    expect(calls[0]?.url.pathname).toBe('/v1/review-jobs/job-1/retry')
+    expect(calls[0]?.init?.method).toBe('POST')
+    expect(writes[0]?.[0]).toBe(200)
+    expect(JSON.parse(body)).toEqual({ retried: true, job: { id: 'job-1', projectId: 'p', taskId: 1, reviewRoundId: 2, state: 'queued', verdict: 'looks_good', createdAt: 'now', updatedAt: 'now' } })
+    expect(body).not.toContain('private')
+  })
+
+  it('rejects non-POST, unsafe or ambiguous job ids before forwarding', async () => {
+    const calls: URL[] = []
+    const handler = crewReviewRetryHandler({ reviewUrl: 'http://127.0.0.1:8413', request: async url => { calls.push(url); return json({}) } })
+    const writes: unknown[][] = []
+    const response = { writeHead: (...args: unknown[]) => { writes.push(args) }, end: () => {} }
+    await handler({ method: 'GET', url: `${CREW_REVIEW_RETRY_PATH}?job_id=job-1` } as IncomingMessage, response as unknown as ServerResponse)
+    expect(writes[0]).toEqual([405, { allow: 'POST' }])
+    for (const query of ['job_id=job-1%2F..%2Fsecret', 'job_id=job-1&job_id=job-2', 'job_id=']) {
+      writes.length = 0
+      await handler({ method: 'POST', url: `${CREW_REVIEW_RETRY_PATH}?${query}` } as IncomingMessage, response as unknown as ServerResponse)
+      expect(writes[0]?.[0]).toBe(400)
+    }
+    expect(calls).toHaveLength(0)
+  })
+
+  it('preserves meaningful 404/409 retry errors and maps outages to 503', async () => {
+    for (const status of [404, 409]) {
+      const writes: unknown[][] = []
+      let body = ''
+      const response = { writeHead: (...args: unknown[]) => { writes.push(args) }, end: (value?: string) => { body = value ?? '' } }
+      const handler = crewReviewRetryHandler({
+        reviewUrl: 'http://127.0.0.1:8413',
+        request: async () => new Response(JSON.stringify({ code: status === 404 ? 'not_found' : 'too_late', error: `problem-${String(status)}` }), { status }),
+      })
+      await handler({ method: 'POST', url: `${CREW_REVIEW_RETRY_PATH}?job_id=job-1` } as IncomingMessage, response as unknown as ServerResponse)
+      expect(writes[0]?.[0]).toBe(status)
+      expect(JSON.parse(body)).toEqual({ error: `problem-${String(status)}` })
+    }
+    const writes: unknown[][] = []
+    const response = { writeHead: (...args: unknown[]) => { writes.push(args) }, end: () => {} }
+    await crewReviewRetryHandler({ reviewUrl: 'http://127.0.0.1:8413', request: async () => { throw new Error('offline') } })(
+      { method: 'POST', url: `${CREW_REVIEW_RETRY_PATH}?job_id=job-1` } as IncomingMessage, response as unknown as ServerResponse,
+    )
+    expect(writes[0]?.[0]).toBe(503)
   })
 })
 

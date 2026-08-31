@@ -96,6 +96,12 @@ export interface CrewReviewDashboardSnapshot {
   readonly failures: readonly CrewReviewJobSummary[]
 }
 
+/** Browser-safe response from one explicit failed-job retry. */
+export interface CrewReviewRetryResponse {
+  readonly job: CrewReviewJobSummary
+  readonly retried: true
+}
+
 /** Browser-safe projection of one adapter-owned foreign runtime session. */
 export interface CrewForeignSession {
   readonly sessionId: string

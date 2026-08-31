@@ -1,13 +1,16 @@
 /** Host-only projection and control routes for the sibling Crew review pool. */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { CrewReviewAffinitySummary, CrewReviewDashboardSnapshot, CrewReviewHealth, CrewReviewJobSummary } from './types.ts'
+import type { CrewReviewAffinitySummary, CrewReviewDashboardSnapshot, CrewReviewHealth, CrewReviewJobSummary, CrewReviewRetryResponse } from './types.ts'
 
 /** Same-origin endpoint served by the DSH plugin for review observations. */
 export const CREW_REVIEW_DASHBOARD_PATH = '/plugins/dsh-crew-messaging/review-pool'
 
 /** Same-origin endpoint used only to release one idle retained reviewer. */
 export const CREW_REVIEW_AFFINITY_PATH = '/plugins/dsh-crew-messaging/review-affinity'
+
+/** Same-origin endpoint used only to retry one exact failed review job. */
+export const CREW_REVIEW_RETRY_PATH = '/plugins/dsh-crew-messaging/review-retry'
 
 /** Keep review readback compact even when the service retains more history. */
 export const CREW_REVIEW_RECENT_LIMIT = 20
@@ -110,6 +113,50 @@ export function crewReviewAffinityHandler(input: {
   }
 }
 
+/** Retry one exact failed review job through the plugin-owned route. */
+export function crewReviewRetryHandler(input: {
+  readonly reviewUrl: string
+  readonly request?: ReviewFetch
+}): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
+  return async (request, response) => {
+    if (request.method !== 'POST') {
+      response.writeHead(405, { allow: 'POST' })
+      response.end()
+      return
+    }
+    const query = new URL(request.url ?? '/', 'http://localhost').searchParams
+    const values = query.getAll('job_id')
+    const jobId = values.length === 1 ? values[0]?.trim() : undefined
+    if (jobId === undefined || !safeJobId(jobId)) {
+      write(response, 400, { error: 'job_id must be a safe identifier' })
+      return
+    }
+    const requestFn = input.request ?? fetch
+    try {
+      const upstream = await requestFn(
+        new URL(`/v1/review-jobs/${encodeURIComponent(jobId)}/retry`, input.reviewUrl),
+        { method: 'POST', headers: { accept: 'application/json' }, signal: AbortSignal.timeout(5_000) },
+      )
+      if (!upstream.ok) {
+        write(response, upstream.status === 404 || upstream.status === 409 ? upstream.status : 503, { error: await upstreamError(upstream) })
+        return
+      }
+      const value = object(await upstream.json())
+      const job = object(value?.job)
+      const projected = job === undefined ? [] : projectJob(job)
+      const result = projected[0]
+      if (value?.retried !== true || result === undefined || result.id !== jobId) {
+        write(response, 503, { error: 'Crew review service returned an invalid retry response' })
+        return
+      }
+      const safeResult: CrewReviewRetryResponse = { job: result, retried: true }
+      write(response, 200, safeResult)
+    } catch {
+      write(response, 503, { error: 'Crew review service is unavailable' })
+    }
+  }
+}
+
 interface PoolProjection {
   readonly backend: string
   readonly capacity: number
@@ -186,6 +233,7 @@ function object(value: unknown): Record<string, unknown> | undefined { return ty
 function text(value: unknown): string | undefined { return typeof value === 'string' ? value : undefined }
 function nonNegativeInteger(value: unknown): number | undefined { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined }
 function positiveInteger(value: unknown): number | undefined { return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined }
+function safeJobId(value: string): boolean { return /^[A-Za-z0-9_-]+$/.test(value) }
 
 async function upstreamError(response: Response): Promise<string> {
   try {

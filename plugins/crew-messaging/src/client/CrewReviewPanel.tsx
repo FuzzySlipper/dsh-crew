@@ -1,12 +1,13 @@
 /** Browser panel for the private Crew review worker pool. */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { CrewReviewAffinitySummary, CrewReviewDashboardSnapshot, CrewReviewJobSummary } from '../dashboard/types.ts'
 import css from './CrewCockpit.styles.ts'
 
 export const CREW_REVIEW_DASHBOARD_ENDPOINT = '/plugins/dsh-crew-messaging/review-pool'
 export const CREW_REVIEW_AFFINITY_ENDPOINT = '/plugins/dsh-crew-messaging/review-affinity'
+export const CREW_REVIEW_RETRY_ENDPOINT = '/plugins/dsh-crew-messaging/review-retry'
 const POLL_MS = 5_000
 
 type ReviewState =
@@ -45,7 +46,10 @@ export function CrewReviewPanel(): ReactNode {
   const [state, setState] = useState<ReviewState>({ kind: 'loading' })
   const [refresh, setRefresh] = useState(0)
   const [releasing, setReleasing] = useState<string | undefined>()
-  const [actionError, setActionError] = useState<string | undefined>()
+  const [retrying, setRetrying] = useState<string | undefined>()
+  const retryingRef = useRef<string | undefined>()
+  const [releaseError, setReleaseError] = useState<string | undefined>()
+  const [retryError, setRetryError] = useState<string | undefined>()
 
   useEffect(() => {
     let active = true
@@ -68,7 +72,7 @@ export function CrewReviewPanel(): ReactNode {
   const release = async (affinity: CrewReviewAffinitySummary): Promise<void> => {
     const key = `${affinity.projectId}:${String(affinity.taskId)}`
     setReleasing(key)
-    setActionError(undefined)
+    setReleaseError(undefined)
     try {
       const url = new URL(CREW_REVIEW_AFFINITY_ENDPOINT, window.location.href)
       url.searchParams.set('project', affinity.projectId)
@@ -80,9 +84,35 @@ export function CrewReviewPanel(): ReactNode {
       }
       setRefresh(value => value + 1)
     } catch (error: unknown) {
-      setActionError(error instanceof Error ? error.message : 'release failed')
+      setReleaseError(error instanceof Error ? error.message : 'release failed')
     } finally {
       setReleasing(undefined)
+    }
+  }
+
+  const retry = async (job: CrewReviewJobSummary): Promise<void> => {
+    if (retryingRef.current !== undefined) return
+    retryingRef.current = job.id
+    setRetrying(job.id)
+    setRetryError(undefined)
+    try {
+      const url = new URL(CREW_REVIEW_RETRY_ENDPOINT, window.location.href)
+      url.searchParams.set('job_id', job.id)
+      const response = await fetch(url, { method: 'POST', headers: { accept: 'application/json' }, cache: 'no-store' })
+      if (!response.ok) {
+        const value = await response.json().catch(() => undefined)
+        throw new Error(isObject(value) && typeof value.error === 'string' ? value.error : `retry failed (${String(response.status)})`)
+      }
+      const value = await response.json().catch(() => undefined)
+      if (!isObject(value) || value.retried !== true || !isObject(value.job) || value.job.id !== job.id) {
+        throw new Error('received an invalid review retry response')
+      }
+      setRefresh(value => value + 1)
+    } catch (error: unknown) {
+      setRetryError(error instanceof Error ? error.message : 'retry failed')
+    } finally {
+      retryingRef.current = undefined
+      setRetrying(undefined)
     }
   }
 
@@ -99,13 +129,13 @@ export function CrewReviewPanel(): ReactNode {
       <Status label="Finalizing" value={String(snapshot.finalizing)} good={snapshot.finalizing === 0} />
       <Status label="Queued" value={String(snapshot.queued)} good={snapshot.queued === 0} />
     </div>
-    {snapshot.failures.length > 0 ? <ReviewFailures failures={snapshot.failures} /> : <p className={css.empty}>No unresolved review failures.</p>}
+    {snapshot.failures.length > 0 ? <ReviewFailures failures={snapshot.failures} retrying={retrying} error={retryError} onRetry={retry} /> : <p className={css.empty}>No unresolved review failures.</p>}
     <ReviewJobs title="Active jobs" empty="No active review jobs." jobs={snapshot.active} />
     <ReviewJobs jobs={snapshot.recent} />
     <section className={css.reviewAffinities}><h4>Retained reviewers</h4>{snapshot.affinities.length === 0 ? <p className={css.empty}>No idle task affinities.</p> : <div className={css.reviewAffinityRows}>{snapshot.affinities.map(affinity => {
       const key = `${affinity.projectId}:${String(affinity.taskId)}`
       return <div className={css.reviewAffinityRow} key={key}><span><strong>{affinity.projectId} / task {String(affinity.taskId)}</strong><small>expires {affinity.expiresAt}</small></span><button type="button" className={css.secondary} disabled={releasing !== undefined} onClick={() => { void release(affinity) }}>{releasing === key ? 'Releasing…' : 'Release'}</button></div>
-    })}</div>}{actionError === undefined ? null : <p className={css.error}>{actionError}</p>}</section>
+    })}</div>}{releaseError === undefined ? null : <p className={css.error}>{releaseError}</p>}</section>
   </section>
 }
 
@@ -113,8 +143,18 @@ function ReviewJobs({ jobs, title = 'Recent verdicts', empty = 'No completed rev
   return <section className={css.reviewJobs}><h4>{title}</h4>{jobs.length === 0 ? <p className={css.empty}>{empty}</p> : <div className={css.reviewJobRows}>{jobs.map(job => <article className={css.reviewJobRow} key={job.id}><div><strong>{job.projectId} / task {String(job.taskId)}</strong><span className={job.verdict === 'looks_good' ? css.good : job.verdict === 'changes_requested' ? css.warning : ''}>{job.verdict ?? job.state}</span></div><small>round {String(job.reviewRoundId)} · {job.updatedAt}</small>{job.failure === undefined ? null : <p className={css.error}>{job.failure}</p>}</article>)}</div>}</section>
 }
 
-function ReviewFailures({ failures }: { readonly failures: readonly CrewReviewJobSummary[] }): ReactNode {
-  return <section className={css.reviewFailures}><h4>Action needed</h4><div className={css.reviewJobRows}>{failures.map(job => <article className={css.reviewJobRow} key={`failure-${job.id}`}><div><strong>{job.projectId} / task {String(job.taskId)}</strong><span className={css.error}>{job.state}</span></div><p className={css.error}>{job.failure ?? 'Review job failed'}</p><small>round {String(job.reviewRoundId)} · {job.updatedAt}</small></article>)}</div></section>
+function ReviewFailures({
+  failures,
+  retrying,
+  error,
+  onRetry,
+}: {
+  readonly failures: readonly CrewReviewJobSummary[]
+  readonly retrying: string | undefined
+  readonly error: string | undefined
+  readonly onRetry: (job: CrewReviewJobSummary) => Promise<void>
+}): ReactNode {
+  return <section className={css.reviewFailures}><h4>Action needed</h4><div className={css.reviewJobRows}>{failures.map(job => <article className={css.reviewJobRow} key={`failure-${job.id}`}><div><strong>{job.projectId} / task {String(job.taskId)}</strong><span className={css.error}>{job.state}</span></div><p className={css.error}>{job.failure ?? 'Review job failed'}</p><small>round {String(job.reviewRoundId)} · {job.updatedAt}</small><button type="button" className={css.secondary} disabled={retrying !== undefined} onClick={() => { void onRetry(job) }}>{retrying === job.id ? 'Retrying…' : 'Retry'}</button></article>)}</div>{error === undefined ? null : <p className={css.error}>{error}</p>}</section>
 }
 
 function Status({ label, value, good }: { readonly label: string; readonly value: string; readonly good: boolean }): ReactNode { return <div><span>{label}</span><strong className={good ? css.good : css.warning}>{value}</strong></div> }
