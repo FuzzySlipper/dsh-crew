@@ -195,6 +195,10 @@ link_plugin_dependencies
 )
 (
   cd -- "$DSH_DIR"
+  # pnpm treats an unchanged-version file dependency as already installed even
+  # when its built files changed. Re-add the one local plugin so the profile
+  # receives the freshly built bundle every time.
+  DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile web remove dsh-crew-messaging >/dev/null 2>&1 || true
   DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile web add "file:$PLUGIN_DIR"
 )
 
