@@ -74,6 +74,13 @@ update_community_plugins() {
   local package_name
   local source
   local sources_file
+  local inventory_file
+  local installed
+  local latest
+  local remote
+  local resolved
+  local locked_commit
+  local remote_commit
   local -a registry_plugins=()
   local -a git_plugins=()
   local -a fixed_plugins=()
@@ -84,6 +91,7 @@ update_community_plugins() {
   fi
 
   sources_file="$(mktemp "${TMPDIR:-/tmp}/dsh-profile-plugins.XXXXXX")"
+  inventory_file="$(mktemp "${TMPDIR:-/tmp}/dsh-profile-inventory.XXXXXX")"
   node - "$manifest" "$(node -p "require('$PLUGIN_DIR/package.json').name")" >"$sources_file" <<'NODE'
 const manifest = require(process.argv[2])
 const localPlugin = process.argv[3]
@@ -110,32 +118,99 @@ NODE
     [[ -n "$package_name" ]] || continue
     case "$kind" in
       registry) registry_plugins+=("$package_name") ;;
-      git) git_plugins+=("$package_name@$source") ;;
-      fixed) fixed_plugins+=("$package_name ($source)") ;;
+      git) git_plugins+=("$package_name"$'\t'"$source") ;;
+      fixed) fixed_plugins+=("$package_name"$'\t'"$source") ;;
       *) die "Unknown community plugin source kind: $kind" ;;
     esac
   done <"$sources_file"
-  rm -f -- "$sources_file"
 
-  if ((${#registry_plugins[@]})); then
-    printf 'Updating registry plugins to their latest releases: %s\n' "${registry_plugins[*]}"
+  write_plugin_inventory "$profile_dir" "$inventory_file"
+
+  for package_name in "${registry_plugins[@]}"; do
+    installed="$(plugin_inventory_field "$inventory_file" "$package_name" version)"
+    latest="$(pnpm view "$package_name" version)"
+    [[ -n "$latest" ]] || die "Registry returned no latest version for $package_name"
+    if [[ "$installed" == "$latest" ]]; then
+      printf 'Registry plugin is current: %s %s\n' "$package_name" "$installed"
+      continue
+    fi
+    printf 'Updating registry plugin: %s %s -> %s\n' "$package_name" "${installed:-not-installed}" "$latest"
     (
       cd -- "$DSH_DIR"
-      DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile "$DSH_PROFILE_NAME" update --latest "${registry_plugins[@]}"
-    )
-  fi
-
-  for source in "${git_plugins[@]}"; do
-    printf 'Refreshing Git-hosted plugin: %s\n' "$source"
-    (
-      cd -- "$DSH_DIR"
-      DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile "$DSH_PROFILE_NAME" add "$source"
+      DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile "$DSH_PROFILE_NAME" add "$package_name@$latest"
     )
   done
 
-  for source in "${fixed_plugins[@]}"; do
-    printf 'Leaving fixed local/archive plugin unchanged: %s\n' "$source"
+  for kind in "${git_plugins[@]}"; do
+    IFS=$'\t' read -r package_name source <<<"$kind"
+    remote="$(git_plugin_remote "$source")"
+    remote_commit="$(git ls-remote "$remote" HEAD | awk 'NR == 1 { print $1 }')"
+    [[ "$remote_commit" =~ ^[0-9a-fA-F]{40}$ ]] || die "Could not resolve Git HEAD for $package_name from $remote"
+    resolved="$(plugin_inventory_field "$inventory_file" "$package_name" resolved)"
+    locked_commit="$(sed -nE 's|.*[/#]([0-9a-fA-F]{40})([^0-9a-fA-F].*)?$|\1|p' <<<"$resolved")"
+    if [[ "${locked_commit,,}" == "${remote_commit,,}" ]]; then
+      printf 'Git plugin is current: %s %s\n' "$package_name" "${remote_commit:0:10}"
+      continue
+    fi
+    printf 'Updating Git plugin: %s %s -> %s\n' "$package_name" "${locked_commit:0:10}" "${remote_commit:0:10}"
+    (
+      cd -- "$DSH_DIR"
+      DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile "$DSH_PROFILE_NAME" update --latest --force "$package_name"
+    )
   done
+
+  write_plugin_inventory "$profile_dir" "$inventory_file"
+  printf '\nCommunity plugin report for profile %s:\n' "$DSH_PROFILE_NAME"
+  for package_name in "${registry_plugins[@]}"; do
+    installed="$(plugin_inventory_field "$inventory_file" "$package_name" version)"
+    latest="$(pnpm view "$package_name" version)"
+    [[ "$installed" == "$latest" ]] || die "$package_name remained at ${installed:-not-installed}; registry latest is $latest"
+    printf '  current  %s %s\n' "$package_name" "$installed"
+  done
+  for kind in "${git_plugins[@]}"; do
+    IFS=$'\t' read -r package_name source <<<"$kind"
+    remote="$(git_plugin_remote "$source")"
+    remote_commit="$(git ls-remote "$remote" HEAD | awk 'NR == 1 { print $1 }')"
+    resolved="$(plugin_inventory_field "$inventory_file" "$package_name" resolved)"
+    locked_commit="$(sed -nE 's|.*[/#]([0-9a-fA-F]{40})([^0-9a-fA-F].*)?$|\1|p' <<<"$resolved")"
+    [[ "${locked_commit,,}" == "${remote_commit,,}" ]] || die "$package_name remained at ${locked_commit:-unknown}; remote HEAD is $remote_commit"
+    printf '  current  %s %s\n' "$package_name" "${locked_commit:0:10}"
+  done
+  for kind in "${fixed_plugins[@]}"; do
+    IFS=$'\t' read -r package_name source <<<"$kind"
+    installed="$(plugin_inventory_field "$inventory_file" "$package_name" version)"
+    printf '  manual   %s %s (%s)\n' "$package_name" "${installed:-unknown}" "$source"
+  done
+  printf '  managed  %s (rebuilt from %s)\n' "$(node -p "require('$PLUGIN_DIR/package.json').name")" "$PLUGIN_DIR"
+
+  rm -f -- "$sources_file" "$inventory_file"
+}
+
+write_plugin_inventory() {
+  local profile_dir=$1
+  local destination=$2
+  (cd -- "$profile_dir" && pnpm list --depth 0 --json --long) >"$destination"
+}
+
+plugin_inventory_field() {
+  local inventory=$1
+  local package_name=$2
+  local field=$3
+  node - "$inventory" "$package_name" "$field" <<'NODE'
+const fs = require('node:fs')
+const inventory = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
+const value = inventory[0]?.dependencies?.[process.argv[3]]?.[process.argv[4]]
+if (typeof value === 'string') process.stdout.write(value)
+NODE
+}
+
+git_plugin_remote() {
+  local source=$1
+  case "$source" in
+    github:*) printf 'https://github.com/%s.git\n' "${source#github:}" ;;
+    git+*) printf '%s\n' "${source#git+}" ;;
+    *) printf '%s\n' "$source" ;;
+  esac
 }
 
 update_repo() {
