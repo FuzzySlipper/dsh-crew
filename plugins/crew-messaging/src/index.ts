@@ -115,21 +115,25 @@ class DshRuntime implements AddressDiscovery {
 
   async discover(): Promise<readonly DiscoveredBinding[]> {
     const values = new Map<string, DiscoveredBinding>()
-    for (const agent of this.ctx.agents.roots()) this.addDiscovered(values, String(agent.id), agent.session.header.origin, agent.session.events)
+    for (const agent of this.ctx.agents.roots()) this.addDiscovered(values, String(agent.id), agent.session.header.origin, agent.session.snapshotEvents())
     const persistence = this.ctx.get('sessionPersistence')
     if (persistence === undefined) return [...values.values()]
-    const snapshots = await persistence.listSnapshots()
+    const snapshots = await persistence.list()
     const nextCold = new Map<string, { readonly revision: unknown; readonly binding: DiscoveredBinding | undefined }>()
     for (const snapshot of snapshots) {
       const sessionId = String(snapshot.header.id)
       if (values.has(sessionId) || snapshot.header.origin === 'subagent') continue
       const cached = this.coldTitles.get(sessionId)
-      if (cached?.revision === snapshot.revision) {
+      if (cached !== undefined && cached.revision === snapshot.revision) {
         nextCold.set(sessionId, cached)
       } else {
-        const inspected = await persistence.inspect(snapshot.header.id)
-        const binding = discoveredFromEvents(sessionId, inspected.meta.origin, inspected.events)
-        nextCold.set(sessionId, { revision: snapshot.revision, binding })
+        const handle = await persistence.open(snapshot.header.id, 'read')
+        try {
+          const binding = discoveredFromEvents(sessionId, handle.header.origin, await handle.read())
+          nextCold.set(sessionId, { revision: snapshot.revision, binding })
+        } finally {
+          await handle.close()
+        }
       }
       const binding = nextCold.get(sessionId)?.binding
       if (binding !== undefined) values.set(sessionId, binding)
@@ -158,10 +162,13 @@ class DshRuntime implements AddressDiscovery {
   }
   async inspect(sessionId: string): Promise<readonly NativeMessage[] | undefined> {
     const live = this.root(sessionId)
-    if (live !== undefined) return acceptedMessages(live.session.events)
+    if (live !== undefined) return acceptedMessages(live.session.snapshotEvents())
     const persistence = this.ctx.get('sessionPersistence')
     if (persistence === undefined) return undefined
-    try { return acceptedMessages((await persistence.inspect(sessionId as SessionId)).events) } catch { return undefined }
+    try {
+      const handle = await persistence.open(sessionId as SessionId, 'read')
+      try { return acceptedMessages(await handle.read()) } finally { await handle.close() }
+    } catch { return undefined }
   }
   async flush(agent: RuntimeAgent): Promise<boolean> { return await this.ctx.sessions.flush((agent as DshAgent).agent.session) }
   message(delivery: { delivery_id: string }, envelope: { message_id: string; sender_address: string; recipient_address: string; body: string }): NativeMessage {

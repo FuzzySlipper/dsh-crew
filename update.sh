@@ -278,6 +278,7 @@ printf 'Linking DSH dependencies needed by the plugin build.\n'
 link_plugin_dependencies
 (
   cd -- "$DSH_DIR"
+  pnpm exec tsc --noEmit -p "$PLUGIN_DIR/tsconfig.json"
   pnpm exec tsc -p "$PLUGIN_DIR/tsconfig.client.json"
   pnpm exec tsdown --config "$PLUGIN_DIR/tsdown.config.ts" --tsconfig "$PLUGIN_DIR/tsconfig.json"
 )
