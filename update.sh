@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$SCRIPT_DIR"
 DSH_DIR="${DSH_SOURCE_DIR:-/home/system/dsh}"
 PLUGIN_DIR="$REPO_ROOT/plugins/crew-messaging"
+DSH_PROFILE_NAME="${DSH_PROFILE:-web}"
 
 if [[ -n "${CREW_SERVICES_DIR:-}" && "${CREW_SERVICES_DIR}" != /* ]]; then
   CREW_SERVICES_DIR="$REPO_ROOT/$CREW_SERVICES_DIR"
@@ -55,6 +56,86 @@ require_command() {
 require_git_repo() {
   [[ -d "$1" ]] || die "$2 directory is missing: $1"
   git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$2 is not a Git checkout: $1"
+}
+
+install_dsh_launcher() {
+  local launcher="$DSH_DIR/apps/cli/lib/bin.js"
+
+  [[ -x "$launcher" ]] || die "Built DSH launcher is missing or not executable: $launcher"
+  mkdir -p -- "$CREW_BIN_DIR"
+  ln -sfn -- "$launcher" "$CREW_BIN_DIR/dsh"
+  printf 'Installed dsh launcher: %s -> %s\n' "$CREW_BIN_DIR/dsh" "$launcher"
+}
+
+update_community_plugins() {
+  local profile_dir="$DSH_HOME_DIR/profiles/$DSH_PROFILE_NAME"
+  local manifest="$profile_dir/package.json"
+  local kind
+  local package_name
+  local source
+  local sources_file
+  local -a registry_plugins=()
+  local -a git_plugins=()
+  local -a fixed_plugins=()
+
+  if [[ ! -f "$manifest" ]]; then
+    printf 'Skipping community plugin updates: profile %s is not initialized.\n' "$DSH_PROFILE_NAME"
+    return
+  fi
+
+  sources_file="$(mktemp "${TMPDIR:-/tmp}/dsh-profile-plugins.XXXXXX")"
+  node - "$manifest" "$(node -p "require('$PLUGIN_DIR/package.json').name")" >"$sources_file" <<'NODE'
+const manifest = require(process.argv[2])
+const localPlugin = process.argv[3]
+for (const [name, raw] of Object.entries(manifest.dependencies ?? {})) {
+  if (name === localPlugin || typeof raw !== 'string') continue
+  const spec = raw.trim()
+  if (/^(?:file|link|workspace|portal):/.test(spec) || /^(?:\.{0,2}\/|\/)/.test(spec)) {
+    console.log(`fixed\t${name}\t${spec}`)
+    continue
+  }
+  if (/^(?:github:|git(?:\+[^:]+)?:|https?:\/\/[^\s]+\.git(?:#|$))/.test(spec)) {
+    console.log(`git\t${name}\t${spec.replace(/#.*$/, '')}`)
+    continue
+  }
+  if (/^(?:https?:\/\/|[^\s]+\.(?:tgz|tar\.gz)$)/.test(spec)) {
+    console.log(`fixed\t${name}\t${spec}`)
+    continue
+  }
+  console.log(`registry\t${name}\t${spec}`)
+}
+NODE
+
+  while IFS=$'\t' read -r kind package_name source; do
+    [[ -n "$package_name" ]] || continue
+    case "$kind" in
+      registry) registry_plugins+=("$package_name") ;;
+      git) git_plugins+=("$package_name@$source") ;;
+      fixed) fixed_plugins+=("$package_name ($source)") ;;
+      *) die "Unknown community plugin source kind: $kind" ;;
+    esac
+  done <"$sources_file"
+  rm -f -- "$sources_file"
+
+  if ((${#registry_plugins[@]})); then
+    printf 'Updating registry plugins to their latest releases: %s\n' "${registry_plugins[*]}"
+    (
+      cd -- "$DSH_DIR"
+      DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile "$DSH_PROFILE_NAME" update --latest "${registry_plugins[@]}"
+    )
+  fi
+
+  for source in "${git_plugins[@]}"; do
+    printf 'Refreshing Git-hosted plugin: %s\n' "$source"
+    (
+      cd -- "$DSH_DIR"
+      DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile "$DSH_PROFILE_NAME" add "$source"
+    )
+  done
+
+  for source in "${fixed_plugins[@]}"; do
+    printf 'Leaving fixed local/archive plugin unchanged: %s\n' "$source"
+  done
 }
 
 update_repo() {
@@ -152,6 +233,7 @@ require_command pnpm
 require_command systemctl
 require_command install
 require_command mktemp
+require_command ln
 require_git_repo "$REPO_ROOT" "DSH Crew"
 require_git_repo "$CREW_SERVICES_DIR" "crew-services"
 require_git_repo "$DSH_DIR" "DeepSeek Harness"
@@ -178,6 +260,12 @@ phase "Installing and building DeepSeek Harness"
   pnpm run build
 )
 
+phase "Installing the global DSH launcher"
+install_dsh_launcher
+
+phase "Updating community plugins for profile $DSH_PROFILE_NAME"
+update_community_plugins
+
 phase "Building crew services"
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dsh-crew-update.XXXXXX")"
 BUILT_SERVICES=()
@@ -198,8 +286,14 @@ link_plugin_dependencies
   # pnpm treats an unchanged-version file dependency as already installed even
   # when its built files changed. Re-add the one local plugin so the profile
   # receives the freshly built bundle every time.
-  DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile web remove dsh-crew-messaging >/dev/null 2>&1 || true
-  DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile web add "file:$PLUGIN_DIR"
+  DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile "$DSH_PROFILE_NAME" remove dsh-crew-messaging >/dev/null 2>&1 || true
+  DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile "$DSH_PROFILE_NAME" add "file:$PLUGIN_DIR"
+)
+
+phase "Validating profile $DSH_PROFILE_NAME"
+(
+  cd -- "$DSH_DIR"
+  DSH_HOME="$DSH_HOME_DIR" pnpm dsh --profile "$DSH_PROFILE_NAME" --dump-config >/dev/null
 )
 
 phase "Installing crew service binaries"
