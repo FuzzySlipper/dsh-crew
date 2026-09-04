@@ -234,8 +234,10 @@ link_plugin_dependencies() {
   local workspace_packages
 
   workspace_packages="$(mktemp "${TMPDIR:-/tmp}/dsh-workspaces.XXXXXX")"
-  pnpm --dir "$DSH_DIR" -r list --depth -1 --json \
-    | node -e '
+  (
+    cd -- "$DSH_DIR"
+    pnpm -r list --depth -1 --json
+  ) | node -e '
       let input = ""
       process.stdin.setEncoding("utf8")
       process.stdin.on("data", chunk => { input += chunk })
