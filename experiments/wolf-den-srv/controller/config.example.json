@@ -1,0 +1,9 @@
+{
+  "ssh_host": "den-srv",
+  "target_port": 48190,
+  "stream_host": "192.168.1.10",
+  "moonlight": "/home/dev/dsh-crew/research/moonlight/squashfs-root/AppRun",
+  "moonlight_config": "/home/dev/dsh-crew/research/moonlight/config",
+  "state": "/home/dev/dsh-crew/experiments/wolf-den-srv/controller/state",
+  "bitrate": 6000
+}

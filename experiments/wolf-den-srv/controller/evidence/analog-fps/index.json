@@ -1,0 +1,35 @@
+{
+  "lease_id": "79d3dfd1-3362-4ff9-9f16-c921536e9075",
+  "projects": [
+    "/home/dev/rusty-space",
+    "/home/dev/rusty-craftsurvive"
+  ],
+  "source": "native Wolf virtual Xbox and Moonlight stream on den-srv",
+  "browser": "Firefox 155.0.1",
+  "stream_size": [
+    1280,
+    720
+  ],
+  "sdk": "0.1.0-dev.2574cc89fd30.gamepad1",
+  "runtime": "runtime-pack-2574cc89fd30-gamepad2",
+  "journal": "session-events.jsonl",
+  "observations": {
+    "space-trigger-25.png": "0405c2da-a011-4e45-a8ae-d22a5a7c4345.png",
+    "space-trigger-75.png": "1e430322-2ef5-49cd-9c70-b02a23eb68c5.png",
+    "space-stick-35.png": "f3f92c6e-39c9-4ecb-89c8-a30682dfadca.png",
+    "space-stick-85.png": "621b48aa-2bcb-45bf-a5f4-9c9d5dc07d02.png",
+    "space-deadzone.png": "4d6e9e12-ff2a-44e0-a315-89776a62fb37.png",
+    "craft-look-low.png": "ad4f37c6-dc50-40ae-94c9-29a6e0bbb24d.png",
+    "craft-look-high.png": "6070d74c-3493-4d81-a1fd-60aec2b4a78f.png",
+    "craft-look-up.png": "6e6ccef2-8e91-42d2-92f4-62567f727c04.png",
+    "craft-move-low.png": "58e10087-a7f1-4fab-af55-a6f4486d0f63.png",
+    "craft-move-high.png": "10187d69-026f-4045-b596-e89396d3e932.png",
+    "craft-final.png": "7fd4674b-2f09-4d11-8930-bf591a5148ca.png"
+  },
+  "diagnostics": "craft-*.txt are read-only C# debug command results; runtime-health files are Engine diagnostic reads, not a browser-console warning delta. Screenshot/game-frame freshness is not measured.",
+  "limits": [
+    "wall-clock actions, not deterministic simulation ticks",
+    "RT/LT returned cast-miss; successful terrain edits not certified",
+    "single controller precreated before browser launch"
+  ]
+}

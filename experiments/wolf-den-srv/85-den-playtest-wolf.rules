@@ -1,0 +1,3 @@
+# Dedicated trusted-LAN Wolf pilot; rootless container root maps to docker-rt.
+KERNEL=="uinput", SUBSYSTEM=="misc", OWNER="docker-rt", MODE="0600", OPTIONS+="static_node=uinput"
+SUBSYSTEM=="input", ATTRS{name}=="Wolf *virtual*", MODE="0666", ENV{ID_SEAT}="seat9", TAG-="uaccess"

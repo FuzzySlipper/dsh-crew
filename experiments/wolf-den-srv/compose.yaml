@@ -1,0 +1,33 @@
+name: playtest-wolf
+services:
+  wolf:
+    image: ghcr.io/games-on-whales/wolf:stable
+    container_name: den-playtest-wolf
+    restart: unless-stopped
+    # Reuse Docker's existing bridge; do not allocate a subnet over the LAN.
+    network_mode: bridge
+    ports:
+      - "47984:47984/tcp"
+      - "47989:47989/tcp"
+      - "48010:48010/tcp"
+      - "47999:47999/udp"
+      - "48100:48100/udp"
+      - "48200:48200/udp"
+    devices:
+      # Wolf needs the primary node to discover and pass the render node to apps.
+      - /dev/dri:/dev/dri
+      - /dev/uinput:/dev/uinput
+    volumes:
+      - /dev/input:/dev/input
+      - /run/udev:/run/udev:ro
+      - /data/services/docker-rt/run/docker.sock:/var/run/docker.sock
+      - /data/services/playtest-wolf:/data/services/playtest-wolf
+      # Wolf's host-path resolver requires an exact runtime-directory mount.
+      - /data/services/playtest-wolf/runtime:/data/services/playtest-wolf/runtime
+    environment:
+      HOST_APPS_STATE_FOLDER: /data/services/playtest-wolf
+      WOLF_SOCKET_PATH: /data/services/playtest-wolf/wolf.sock
+      XDG_RUNTIME_DIR: /data/services/playtest-wolf/runtime
+      WOLF_RENDER_NODE: /dev/dri/renderD128
+      WOLF_INTERNAL_IP: 192.168.1.10
+      WOLF_LOG_LEVEL: INFO

@@ -1,0 +1,15 @@
+[Unit]
+Description=Wolf agent playtest slot and bounded input controller
+After=network.target
+
+[Service]
+Type=simple
+User=docker-rt
+Group=den-pi-docker
+ExecStart=/usr/bin/python3 /data/services/playtest-wolf/controller/target.py --socket /data/services/playtest-wolf/wolf.sock --state /data/services/playtest-wolf/controller/state --client-id 7411603768457197485 --port 48190
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=40
+
+[Install]
+WantedBy=multi-user.target

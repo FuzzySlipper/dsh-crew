@@ -1,0 +1,6 @@
+FROM ghcr.io/games-on-whales/firefox:edge
+
+# The base image's Firefox 150 lacks Linux analog-trigger button remapping.
+# Follow the configured Mozilla apt repository's current stable browser.
+RUN apt-get update && apt-get install -y --only-upgrade firefox \
+    && rm -rf /var/lib/apt/lists/*
