@@ -1,8 +1,41 @@
 import { describe, expect, it } from 'vitest'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { CREW_REVIEW_RECENT_LIMIT, CREW_REVIEW_RETRY_PATH, crewReviewAffinityHandler, crewReviewDashboardHandler, crewReviewDashboardSnapshot, crewReviewRetryHandler } from '../src/dashboard/review.ts'
+import { CREW_REVIEW_CHECK_PATH, CREW_REVIEW_RECENT_LIMIT, CREW_REVIEW_RETRY_PATH, crewReviewAffinityHandler, crewReviewCheckHandler, crewReviewDashboardHandler, crewReviewDashboardSnapshot, crewReviewRetryHandler } from '../src/dashboard/review.ts'
 
 describe('Crew review dashboard host projection', () => {
+  it('forwards one runtime check and projects only the check fields', async () => {
+    const calls: Array<{ url: URL; init?: RequestInit }> = []
+    const handler = crewReviewCheckHandler({
+      reviewUrl: 'http://127.0.0.1:8413',
+      request: async (url, init) => {
+        calls.push({ url, ...(init === undefined ? {} : { init }) })
+        return json({ ok: false, backend: 'codex', workspace: '/home/agent/dev/x', command: 'codex sandbox -c sandbox_mode="read-only" git rev-parse HEAD', detail: 'bwrap: Permission denied', checked_at: '2026-10-03T12:00:00Z', private: 'x' })
+      },
+    })
+    const writes: unknown[][] = []
+    let body = ''
+    const response = { writeHead: (...args: unknown[]) => { writes.push(args) }, end: (value?: string) => { body = value ?? '' } }
+    await handler({ method: 'GET', url: CREW_REVIEW_CHECK_PATH } as IncomingMessage, response as unknown as ServerResponse)
+    expect(writes[0]).toEqual([405, { allow: 'POST' }])
+    expect(calls).toHaveLength(0)
+    writes.length = 0
+    await handler({ method: 'POST', url: CREW_REVIEW_CHECK_PATH } as IncomingMessage, response as unknown as ServerResponse)
+    expect(calls[0]?.url.pathname).toBe('/v1/review-pool/check')
+    expect(calls[0]?.init?.method).toBe('POST')
+    expect(writes[0]?.[0]).toBe(200)
+    expect(JSON.parse(body)).toEqual({ ok: false, backend: 'codex', workspace: '/home/agent/dev/x', command: 'codex sandbox -c sandbox_mode="read-only" git rev-parse HEAD', detail: 'bwrap: Permission denied', checkedAt: '2026-10-03T12:00:00Z' })
+  })
+
+  it('reports an older service without the check and a malformed check response', async () => {
+    for (const [upstream, status] of [[new Response('', { status: 404 }), 404], [json({ ok: 'yes' }), 503]] as const) {
+      const writes: unknown[][] = []
+      const response = { writeHead: (...args: unknown[]) => { writes.push(args) }, end: () => {} }
+      const handler = crewReviewCheckHandler({ reviewUrl: 'http://127.0.0.1:8413', request: async () => upstream })
+      await handler({ method: 'POST', url: CREW_REVIEW_CHECK_PATH } as IncomingMessage, response as unknown as ServerResponse)
+      expect(writes[0]?.[0]).toBe(status)
+    }
+  })
+
   it('projects bounded pool facts and strips private worker and Den details', async () => {
     const calls: URL[] = []
     const snapshot = await crewReviewDashboardSnapshot({

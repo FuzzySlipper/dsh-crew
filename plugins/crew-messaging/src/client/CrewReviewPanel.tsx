@@ -2,18 +2,29 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { CrewReviewAffinitySummary, CrewReviewDashboardSnapshot, CrewReviewJobSummary } from '../dashboard/types.ts'
+import type { CrewReviewAffinitySummary, CrewReviewDashboardSnapshot, CrewReviewJobSummary, CrewReviewRuntimeCheck } from '../dashboard/types.ts'
 import css from './CrewCockpit.styles.ts'
 
 export const CREW_REVIEW_DASHBOARD_ENDPOINT = '/plugins/dsh-crew-messaging/review-pool'
 export const CREW_REVIEW_AFFINITY_ENDPOINT = '/plugins/dsh-crew-messaging/review-affinity'
 export const CREW_REVIEW_RETRY_ENDPOINT = '/plugins/dsh-crew-messaging/review-retry'
+export const CREW_REVIEW_CHECK_ENDPOINT = '/plugins/dsh-crew-messaging/review-check'
 const POLL_MS = 5_000
 
 type ReviewState =
   | { readonly kind: 'loading' }
   | { readonly kind: 'ready'; readonly snapshot: CrewReviewDashboardSnapshot; readonly refreshedAt: string }
   | { readonly kind: 'error'; readonly message: string }
+
+/** Decode one reviewer runtime check and discard unknown fields. */
+export function decodeCrewReviewCheck(value: unknown): CrewReviewRuntimeCheck | undefined {
+  if (!isObject(value) || typeof value.ok !== 'boolean' || typeof value.backend !== 'string' || typeof value.detail !== 'string' || typeof value.checkedAt !== 'string') return undefined
+  return {
+    ok: value.ok, backend: value.backend, detail: value.detail, checkedAt: value.checkedAt,
+    ...(typeof value.workspace === 'string' ? { workspace: value.workspace } : {}),
+    ...(typeof value.command === 'string' ? { command: value.command } : {}),
+  }
+}
 
 /** Decode only the plugin-owned review projection and discard unknown fields. */
 export function decodeCrewReviewDashboard(value: unknown): CrewReviewDashboardSnapshot | undefined {
@@ -129,6 +140,7 @@ export function CrewReviewPanel(): ReactNode {
       <Status label="Finalizing" value={String(snapshot.finalizing)} good={snapshot.finalizing === 0} />
       <Status label="Queued" value={String(snapshot.queued)} good={snapshot.queued === 0} />
     </div>
+    <ReviewRuntimeCheck />
     {snapshot.failures.length > 0 ? <ReviewFailures failures={snapshot.failures} retrying={retrying} error={retryError} onRetry={retry} /> : <p className={css.empty}>No unresolved review failures.</p>}
     <ReviewJobs title="Active jobs" empty="No active review jobs." jobs={snapshot.active} />
     <ReviewJobs jobs={snapshot.recent} />
@@ -136,6 +148,35 @@ export function CrewReviewPanel(): ReactNode {
       const key = `${affinity.projectId}:${String(affinity.taskId)}`
       return <div className={css.reviewAffinityRow} key={key}><span><strong>{affinity.projectId} / task {String(affinity.taskId)}</strong><small>expires {affinity.expiresAt}</small></span><button type="button" className={css.secondary} disabled={releasing !== undefined} onClick={() => { void release(affinity) }}>{releasing === key ? 'Releasing…' : 'Release'}</button></div>
     })}</div>}{releaseError === undefined ? null : <p className={css.error}>{releaseError}</p>}</section>
+  </section>
+}
+
+/** Run the reviewer sandbox probe on request and show its exact output. */
+function ReviewRuntimeCheck(): ReactNode {
+  const [checking, setChecking] = useState(false)
+  const [result, setResult] = useState<CrewReviewRuntimeCheck | undefined>()
+  const [error, setError] = useState<string | undefined>()
+  const check = async (): Promise<void> => {
+    setChecking(true)
+    setError(undefined)
+    try {
+      const response = await fetch(CREW_REVIEW_CHECK_ENDPOINT, { method: 'POST', headers: { accept: 'application/json' }, cache: 'no-store' })
+      const value: unknown = await response.json().catch(() => undefined)
+      if (!response.ok) throw new Error(isObject(value) && typeof value.error === 'string' ? value.error : `check failed (${String(response.status)})`)
+      const decoded = decodeCrewReviewCheck(value)
+      if (decoded === undefined) throw new Error('received an invalid review check response')
+      setResult(decoded)
+    } catch (caught: unknown) {
+      setResult(undefined)
+      setError(caught instanceof Error ? caught.message : 'check failed')
+    } finally {
+      setChecking(false)
+    }
+  }
+  return <section className={css.reviewJobs}>
+    <div className={css.reviewHeader}><div><h4>Reviewer sandbox</h4><p className={css.reviewDescription}>Runs one read-only command where reviewers run theirs. A broken sandbox lets review turns finish without inspecting the code.</p></div><button type="button" className={css.secondary} disabled={checking} onClick={() => { void check() }}>{checking ? 'Checking…' : 'Check reviewer sandbox'}</button></div>
+    {error === undefined ? null : <p className={css.error}>{error}</p>}
+    {result === undefined ? null : <article className={css.reviewJobRow}><div><strong>{result.ok ? 'Reviewers can run commands' : 'Reviewers cannot run commands'}</strong><span className={result.ok ? css.good : css.error}>{result.ok ? 'ok' : 'failed'}</span></div><p className={result.ok ? '' : css.error}>{result.detail}</p><small>{result.backend}{result.workspace === undefined ? '' : ` · ${result.workspace}`} · {result.checkedAt}</small>{result.command === undefined ? null : <small><code>{result.command}</code></small>}</article>}
   </section>
 }
 

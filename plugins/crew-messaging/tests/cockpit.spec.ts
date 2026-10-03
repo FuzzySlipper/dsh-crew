@@ -37,7 +37,7 @@ describe('Crew cockpit client', () => {
     expect(decodeCrewDashboard({ ...snapshot, deliveries: [{ id: 'd', messageId: 'm', recipient: 'B' }] })).toBeUndefined()
   })
 
-  it('registers and disposes independent messaging and review Settings sections', () => {
+  it('registers and disposes the messaging Settings section', () => {
     const registrations: Array<{ readonly id: string; readonly order: number; readonly label: string }> = []
     const settings: Array<() => () => void> = []
     apply({ slots: {
@@ -45,11 +45,10 @@ describe('Crew cockpit client', () => {
       register: (options) => { registrations.push(options); return () => { registrations.splice(registrations.findIndex(item => item.id === options.id), 1) } },
     }, logger: { warn: () => {} }, effect: effect => { void effect() } })
     expect(inject).toEqual(['slots'])
-    expect(settings).toHaveLength(2)
+    expect(settings).toHaveLength(1)
     const disposers = settings.map(register => register())
     expect(registrations).toEqual([
       { name: 'settings.section', id: 'crew-messaging', order: 35, label: 'Crew messaging' },
-      { name: 'settings.section', id: 'crew-review', order: 36, label: 'Crew review' },
     ])
     for (const dispose of disposers) dispose()
     expect(registrations).toEqual([])
@@ -63,13 +62,14 @@ describe('Crew cockpit client', () => {
       register: options => { registrations.push(options); return () => {} },
     }, logger: { warn: () => {} }, effect: effect => { void effect() } })
     for (const callback of injected.get('settings.section') ?? []) callback()
-    injected.get('sidebar.footer.action')?.[0]?.()
-    injected.get('shell.overlay')?.[0]?.()
+    for (const callback of injected.get('sidebar.footer.action') ?? []) callback()
+    for (const callback of injected.get('shell.overlay') ?? []) callback()
     expect(registrations.map(({ name, id }) => ({ name, id }))).toEqual([
       { name: 'settings.section', id: 'crew-messaging' },
-      { name: 'settings.section', id: 'crew-review' },
       { name: 'sidebar.footer.action', id: 'crew-messaging-sessions' },
+      { name: 'sidebar.footer.action', id: 'crew-review' },
       { name: 'shell.overlay', id: 'crew-messaging-sessions' },
+      { name: 'shell.overlay', id: 'crew-review' },
     ])
   })
 })

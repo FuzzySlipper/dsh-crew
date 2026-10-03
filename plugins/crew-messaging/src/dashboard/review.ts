@@ -1,7 +1,7 @@
 /** Host-only projection and control routes for the sibling Crew review pool. */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { CrewReviewAffinitySummary, CrewReviewDashboardSnapshot, CrewReviewHealth, CrewReviewJobSummary, CrewReviewRetryResponse } from './types.ts'
+import type { CrewReviewAffinitySummary, CrewReviewDashboardSnapshot, CrewReviewHealth, CrewReviewJobSummary, CrewReviewRetryResponse, CrewReviewRuntimeCheck } from './types.ts'
 
 /** Same-origin endpoint served by the DSH plugin for review observations. */
 export const CREW_REVIEW_DASHBOARD_PATH = '/plugins/dsh-crew-messaging/review-pool'
@@ -11,6 +11,12 @@ export const CREW_REVIEW_AFFINITY_PATH = '/plugins/dsh-crew-messaging/review-aff
 
 /** Same-origin endpoint used only to retry one exact failed review job. */
 export const CREW_REVIEW_RETRY_PATH = '/plugins/dsh-crew-messaging/review-retry'
+
+/** Same-origin endpoint that asks the review service to probe its reviewer runtime once. */
+export const CREW_REVIEW_CHECK_PATH = '/plugins/dsh-crew-messaging/review-check'
+
+/** The service bounds its own probe at 30 seconds; allow for that plus transport. */
+const CREW_REVIEW_CHECK_TIMEOUT_MS = 45_000
 
 /** Keep review readback compact even when the service retains more history. */
 export const CREW_REVIEW_RECENT_LIMIT = 20
@@ -154,6 +160,54 @@ export function crewReviewRetryHandler(input: {
     } catch {
       write(response, 503, { error: 'Crew review service is unavailable' })
     }
+  }
+}
+
+/** Run one reviewer runtime probe through the plugin-owned route. */
+export function crewReviewCheckHandler(input: {
+  readonly reviewUrl: string
+  readonly request?: ReviewFetch
+}): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
+  return async (request, response) => {
+    if (request.method !== 'POST') {
+      response.writeHead(405, { allow: 'POST' })
+      response.end()
+      return
+    }
+    const requestFn = input.request ?? fetch
+    try {
+      const upstream = await requestFn(
+        new URL('/v1/review-pool/check', input.reviewUrl),
+        { method: 'POST', headers: { accept: 'application/json' }, signal: AbortSignal.timeout(CREW_REVIEW_CHECK_TIMEOUT_MS) },
+      )
+      if (!upstream.ok) {
+        write(response, upstream.status === 404 ? 404 : 503, { error: upstream.status === 404 ? 'This crew-review build has no runtime check' : await upstreamError(upstream) })
+        return
+      }
+      const check = projectCheck(object(await upstream.json()))
+      if (check === undefined) {
+        write(response, 503, { error: 'Crew review service returned an invalid check response' })
+        return
+      }
+      write(response, 200, check)
+    } catch {
+      write(response, 503, { error: 'Crew review service is unavailable' })
+    }
+  }
+}
+
+function projectCheck(value: Record<string, unknown> | undefined): CrewReviewRuntimeCheck | undefined {
+  const ok = value?.ok
+  const backend = text(value?.backend)
+  const detail = text(value?.detail)
+  const checkedAt = text(value?.checked_at)
+  if (typeof ok !== 'boolean' || backend === undefined || detail === undefined || checkedAt === undefined) return undefined
+  const workspace = text(value?.workspace)
+  const command = text(value?.command)
+  return {
+    ok, backend, detail, checkedAt,
+    ...(workspace === undefined || workspace === '' ? {} : { workspace }),
+    ...(command === undefined || command === '' ? {} : { command }),
   }
 }
 

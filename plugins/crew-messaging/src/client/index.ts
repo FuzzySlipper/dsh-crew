@@ -1,7 +1,7 @@
 /** Browser half of the Crew messaging plugin. */
 
 import { CrewCockpit } from './CrewCockpit.tsx'
-import { CrewReviewPanel } from './CrewReviewPanel.tsx'
+import { CrewReviewDrawerController, CrewReviewOverlay, CrewReviewTrigger } from './CrewReviewDrawer.tsx'
 import { CrewSessionWorkbenchController, createCrewSessionWorkbenchPort } from './CrewSessionWorkbench.ts'
 import { installCrewSessionWorkbenchStyle } from './CrewSessionWorkbench.styles.ts'
 import { CrewSessionWorkbenchOverlay, CrewSessionWorkbenchTrigger } from './CrewSessionWorkbenchView.tsx'
@@ -15,20 +15,19 @@ interface ClientContext {
     register(options: { name: 'settings.section'; id: string; order: number; label: string }, component: typeof CrewCockpit): () => void
     register(options: { name: 'sidebar.footer.action'; id: string; order: number; label: string; inject: () => { controller: CrewSessionWorkbenchController } }, component: typeof CrewSessionWorkbenchTrigger): () => void
     register(options: { name: 'shell.overlay'; id: string; order: number; inject: () => { controller: CrewSessionWorkbenchController } }, component: typeof CrewSessionWorkbenchOverlay): () => void
+    register(options: { name: 'sidebar.footer.action'; id: string; order: number; label: string; inject: () => { controller: CrewReviewDrawerController } }, component: typeof CrewReviewTrigger): () => void
+    register(options: { name: 'shell.overlay'; id: string; order: number; inject: () => { controller: CrewReviewDrawerController } }, component: typeof CrewReviewOverlay): () => void
   }
 }
 
 /** The services required to contribute a global Settings section. */
 export const inject = ['slots']
 
-/** Register independent messaging and review settings once the shell is present. */
+/** Register the messaging Settings section and the sidebar session and review drawers. */
 export function apply(ctx: ClientContext): void {
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section', id: 'crew-messaging', order: 35, label: 'Crew messaging',
   }, CrewCockpit))
-  ctx.slots.inject('settings.section', () => ctx.slots.register({
-    name: 'settings.section', id: 'crew-review', order: 36, label: 'Crew review',
-  }, CrewReviewPanel))
   const controller = new CrewSessionWorkbenchController(createCrewSessionWorkbenchPort(), error => { ctx.logger.warn(error) })
   ctx.effect(() => {
     if (typeof document === 'undefined') return () => { controller.dispose() }
@@ -42,4 +41,13 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('shell.overlay', () => ctx.slots.register({
     name: 'shell.overlay', id: 'crew-messaging-sessions', order: 35, inject: injected,
   }, CrewSessionWorkbenchOverlay))
+  const review = new CrewReviewDrawerController()
+  ctx.effect(() => () => { review.dispose() }, 'crew-messaging: review drawer lifecycle')
+  const reviewInjected = (): { controller: CrewReviewDrawerController } => ({ controller: review })
+  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+    name: 'sidebar.footer.action', id: 'crew-review', order: 36, label: 'Crew review', inject: reviewInjected,
+  }, CrewReviewTrigger))
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+    name: 'shell.overlay', id: 'crew-review', order: 36, inject: reviewInjected,
+  }, CrewReviewOverlay))
 }

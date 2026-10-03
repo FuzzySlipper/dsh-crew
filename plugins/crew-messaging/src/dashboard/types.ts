@@ -102,6 +102,16 @@ export interface CrewReviewRetryResponse {
   readonly retried: true
 }
 
+/** Browser-safe result of one on-demand reviewer runtime probe. */
+export interface CrewReviewRuntimeCheck {
+  readonly ok: boolean
+  readonly backend: string
+  readonly workspace?: string
+  readonly command?: string
+  readonly detail: string
+  readonly checkedAt: string
+}
+
 /** Browser-safe projection of one adapter-owned foreign runtime session. */
 export interface CrewForeignSession {
   readonly sessionId: string
