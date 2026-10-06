@@ -77,6 +77,9 @@ var FabricClient = class {
 	deliveries() {
 		return this.call("/v1/deliveries");
 	}
+	head(address, generation) {
+		return this.call(`/v1/mailbox/${encodeURIComponent(address)}/head?generation=${generation}`);
+	}
 };
 //#endregion
 //#region src/protocol.ts
@@ -95,6 +98,14 @@ function nativeAttempt(deliveryId) {
 /** A workbench receipt is durable in the fabric ledger, never a DSH runtime insertion. */
 function workbenchAttempt(deliveryId) {
 	return `dsh-crew:${deliveryId}:workbench`;
+}
+/**
+* One claim identity per observed head attempt and availability, so a retry
+* after a lost response replays the same claim while a changed availability
+* never collides with an earlier receipt's fingerprint.
+*/
+function claimOperation(head, action, availability) {
+	return operation(head.delivery_id, `${action}:${(head.attempt_count ?? 0) + 1}:${availability}`);
 }
 //#endregion
 //#region src/addressing.ts
@@ -163,6 +174,7 @@ const defaults$1 = {
 	leaseDuration: "2m",
 	renewMs: 45e3,
 	pollMs: 1e3,
+	discoveryMs: 3e4,
 	claimDuration: "45s",
 	ttl: "24h",
 	acceptanceTimeoutMs: 1e3,
@@ -186,6 +198,7 @@ var CrewMessagingService = class {
 	tails = /* @__PURE__ */ new Map();
 	lease;
 	leaseRenewedAt = 0;
+	addressedAt = 0;
 	initialized = false;
 	stopped = false;
 	timer;
@@ -318,7 +331,7 @@ var CrewMessagingService = class {
 			}
 			const lease = await this.ensureLease();
 			await this.ensureWorkbenchBinding(lease, (await this.fabric.listBindings()).addresses);
-			await this.enqueueAddressing();
+			if (Date.now() - this.addressedAt >= this.config.discoveryMs) await this.enqueueAddressing();
 			await this.reconcileWorkbench();
 			await Promise.all(this.effective.map((binding) => this.pumpSession(binding.sessionId)));
 			await this.pumpWorkbench();
@@ -353,6 +366,7 @@ var CrewMessagingService = class {
 	}
 	async refreshAddressing() {
 		if (this.stopped) return;
+		this.addressedAt = Date.now();
 		const discovered = this.discovery === void 0 ? [] : (await this.discovery.discover()).filter((binding) => addressKey(binding.address) !== addressKey(this.config.workbenchAddress));
 		const desired = effectiveBindings(this.configuredBindings, discovered);
 		await this.bind(desired);
@@ -453,17 +467,25 @@ var CrewMessagingService = class {
 		const lease = await this.ensureLease();
 		let agent = this.runtime.live(sessionId);
 		const availability = agent?.status === "running" ? "busy" : agent === void 0 ? "inactive" : "idle";
+		const generation = await this.generation(binding.address);
+		const head = await this.queuedHead(binding.address, generation);
+		if (head === void 0) return;
 		const claimed = await this.fabric.claim({
 			adapter_id: this.config.adapterId,
 			lease_token: lease.lease_token,
-			operation_id: operation(`${binding.address}:${Date.now()}`, "claim"),
+			operation_id: claimOperation(head, "claim", availability),
 			recipient_address: binding.address,
-			recipient_generation: await this.generation(binding.address),
+			recipient_generation: generation,
 			availability,
 			claim_duration: this.config.claimDuration
 		});
 		if (!claimed.claimed || claimed.delivery === void 0 || claimed.message === void 0 || claimed.claim_token === void 0) return;
 		await this.dispatch(claimed, sessionId);
+	}
+	/** Polls read the head first so an empty mailbox costs no claim write. */
+	async queuedHead(address, generation) {
+		const { delivery } = await this.fabric.head(address, generation);
+		return delivery?.state === "queued" ? delivery : void 0;
 	}
 	async generation(address) {
 		const binding = (await this.fabric.listBindings()).addresses.find((item) => item.address === address);
@@ -516,12 +538,15 @@ var CrewMessagingService = class {
 	async pumpWorkbench() {
 		if (this.stopped) return;
 		const lease = await this.ensureLease();
+		const generation = await this.generation(this.config.workbenchAddress);
+		const head = await this.queuedHead(this.config.workbenchAddress, generation);
+		if (head === void 0) return;
 		const claimed = await this.fabric.claim({
 			adapter_id: this.config.adapterId,
 			lease_token: lease.lease_token,
-			operation_id: operation(`${this.config.workbenchAddress}:${Date.now()}`, "workbench-claim"),
+			operation_id: claimOperation(head, "workbench-claim", "idle"),
 			recipient_address: this.config.workbenchAddress,
-			recipient_generation: await this.generation(this.config.workbenchAddress),
+			recipient_generation: generation,
 			availability: "idle",
 			claim_duration: this.config.claimDuration
 		});
@@ -965,6 +990,10 @@ const CREW_REVIEW_DASHBOARD_PATH = "/plugins/dsh-crew-messaging/review-pool";
 const CREW_REVIEW_AFFINITY_PATH = "/plugins/dsh-crew-messaging/review-affinity";
 /** Same-origin endpoint used only to retry one exact failed review job. */
 const CREW_REVIEW_RETRY_PATH = "/plugins/dsh-crew-messaging/review-retry";
+/** Same-origin endpoint that asks the review service to probe its reviewer runtime once. */
+const CREW_REVIEW_CHECK_PATH = "/plugins/dsh-crew-messaging/review-check";
+/** The service bounds its own probe at 30 seconds; allow for that plus transport. */
+const CREW_REVIEW_CHECK_TIMEOUT_MS = 45e3;
 /** Build the browser-safe pool projection from the review service's two reads. */
 async function crewReviewDashboardSnapshot(input) {
 	const request = input.request ?? fetch;
@@ -1083,6 +1112,53 @@ function crewReviewRetryHandler(input) {
 		} catch {
 			write$1(response, 503, { error: "Crew review service is unavailable" });
 		}
+	};
+}
+/** Run one reviewer runtime probe through the plugin-owned route. */
+function crewReviewCheckHandler(input) {
+	return async (request, response) => {
+		if (request.method !== "POST") {
+			response.writeHead(405, { allow: "POST" });
+			response.end();
+			return;
+		}
+		const requestFn = input.request ?? fetch;
+		try {
+			const upstream = await requestFn(new URL("/v1/review-pool/check", input.reviewUrl), {
+				method: "POST",
+				headers: { accept: "application/json" },
+				signal: AbortSignal.timeout(CREW_REVIEW_CHECK_TIMEOUT_MS)
+			});
+			if (!upstream.ok) {
+				write$1(response, upstream.status === 404 ? 404 : 503, { error: upstream.status === 404 ? "This crew-review build has no runtime check" : await upstreamError(upstream) });
+				return;
+			}
+			const check = projectCheck(object$1(await upstream.json()));
+			if (check === void 0) {
+				write$1(response, 503, { error: "Crew review service returned an invalid check response" });
+				return;
+			}
+			write$1(response, 200, check);
+		} catch {
+			write$1(response, 503, { error: "Crew review service is unavailable" });
+		}
+	};
+}
+function projectCheck(value) {
+	const ok = value?.ok;
+	const backend = text$1(value?.backend);
+	const detail = text$1(value?.detail);
+	const checkedAt = text$1(value?.checked_at);
+	if (typeof ok !== "boolean" || backend === void 0 || detail === void 0 || checkedAt === void 0) return void 0;
+	const workspace = text$1(value?.workspace);
+	const command = text$1(value?.command);
+	return {
+		ok,
+		backend,
+		detail,
+		checkedAt,
+		...workspace === void 0 || workspace === "" ? {} : { workspace },
+		...command === void 0 || command === "" ? {} : { command }
 	};
 }
 async function readJson(request, url) {
@@ -2279,6 +2355,7 @@ var CrewMessagingProvider = class extends Service {
 		const reviewDashboard = crewReviewDashboardHandler({ reviewUrl });
 		const reviewAffinity = crewReviewAffinityHandler({ reviewUrl });
 		const reviewRetry = crewReviewRetryHandler({ reviewUrl });
+		const reviewCheck = crewReviewCheckHandler({ reviewUrl });
 		const fabricUrl = config.url ?? "http://127.0.0.1:8787";
 		const sessions = crewForeignSessionsHandler({ fabricUrl });
 		const events = crewForeignSessionEventsHandler({ fabricUrl });
@@ -2312,6 +2389,11 @@ var CrewMessagingProvider = class extends Service {
 				path: CREW_REVIEW_RETRY_PATH,
 				handler: reviewRetry
 			}), "crew-messaging: review retry route");
+			webCtx.effect(() => webServer.register({
+				kind: "exact",
+				path: CREW_REVIEW_CHECK_PATH,
+				handler: reviewCheck
+			}), "crew-messaging: review check route");
 			webCtx.effect(() => webServer.register({
 				kind: "exact",
 				path: CREW_SESSIONS_PATH,
@@ -2438,9 +2520,13 @@ var DshRuntime = class {
 		const stopEvent = this.ctx.on("session/event", (session, event) => {
 			if (event.type === "session/title" && this.root(String(session.id)) !== void 0) listener();
 		});
+		const stopCreated = this.ctx.on("session/created", (session) => {
+			if (session.header.origin !== "subagent") listener();
+		});
 		const stopDisposed = this.ctx.on("session/disposed", () => listener());
 		return () => {
 			stopEvent();
+			stopCreated();
 			stopDisposed();
 		};
 	}

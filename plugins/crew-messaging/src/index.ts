@@ -147,8 +147,9 @@ class DshRuntime implements AddressDiscovery {
     const stopEvent = this.ctx.on('session/event', (session, event) => {
       if ((event as { type: string }).type === 'session/title' && this.root(String(session.id)) !== undefined) listener()
     })
+    const stopCreated = this.ctx.on('session/created', session => { if (session.header.origin !== 'subagent') listener() })
     const stopDisposed = this.ctx.on('session/disposed', () => listener())
-    return () => { stopEvent(); stopDisposed() }
+    return () => { stopEvent(); stopCreated(); stopDisposed() }
   }
 
   live(sessionId: string): RuntimeAgent | undefined { const agent = this.root(sessionId); return agent === undefined ? undefined : this.wrap(agent) }

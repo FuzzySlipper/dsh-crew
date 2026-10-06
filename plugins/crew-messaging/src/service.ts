@@ -1,4 +1,4 @@
-import { capabilities, nativeAttempt, operation, workbenchAttempt, type Binding, type Claim, type Delivery, type Lease, type Message } from './protocol.ts'
+import { capabilities, claimOperation, nativeAttempt, operation, workbenchAttempt, type Binding, type Claim, type Delivery, type Lease, type Message } from './protocol.ts'
 import { addressKey, effectiveBindings, type AddressDiscovery, type AddressPlan, type DirectoryEntry, type ManagedDynamicBinding } from './addressing.ts'
 import { FabricError } from './http.ts'
 
@@ -12,6 +12,8 @@ export interface CrewMessagingConfig {
   workbenchAddress?: string
   codexControlUrl?: string; reviewUrl?: string
   leaseDuration?: string; renewMs?: number; pollMs?: number; claimDuration?: string; ttl?: string
+  /** Safety rescan interval for the session directory; lifecycle events refresh it sooner. */
+  discoveryMs?: number
   acceptanceTimeoutMs?: number; acceptancePollMs?: number
   reviewerProfilePath?: string; reviewerPreset?: string
   reviewerProvider?: string; reviewerModel?: string; reviewerEffort?: string; reviewerCapacity?: number
@@ -44,9 +46,11 @@ export interface Fabric {
   acknowledge(deliveryId: string, body: Record<string, unknown>): Promise<Delivery>
   unknown(deliveryId: string, body: Record<string, unknown>): Promise<Delivery>
   deliveries(): Promise<{ deliveries: Delivery[] }>
+  /** Read-only FIFO head for one binding generation; it never claims or wakes. */
+  head(address: string, generation: number): Promise<{ delivery: Delivery | null }>
 }
 
-const defaults = { adapterId: 'dsh-crew-messaging', instanceId: 'dsh-crew-messaging-local', workbenchAddress: 'dsh/workbench', codexControlUrl: 'http://127.0.0.1:8788', reviewUrl: 'http://127.0.0.1:8413', leaseDuration: '2m', renewMs: 45_000, pollMs: 1_000, claimDuration: '45s', ttl: '24h', acceptanceTimeoutMs: 1_000, acceptancePollMs: 10 }
+const defaults = { adapterId: 'dsh-crew-messaging', instanceId: 'dsh-crew-messaging-local', workbenchAddress: 'dsh/workbench', codexControlUrl: 'http://127.0.0.1:8788', reviewUrl: 'http://127.0.0.1:8413', leaseDuration: '2m', renewMs: 45_000, pollMs: 1_000, discoveryMs: 30_000, claimDuration: '45s', ttl: '24h', acceptanceTimeoutMs: 1_000, acceptancePollMs: 10 }
 const workbenchTarget = 'dsh-crew-workbench'
 /** `deliver_when_idle` makes the workbench visible to Codex's dynamic crew directory. */
 const workbenchCapabilities = ['deliver_when_idle', 'workbench-inbox']
@@ -64,6 +68,7 @@ export class CrewMessagingService {
   private readonly tails = new Map<string, Promise<void>>()
   private lease: Lease | undefined
   private leaseRenewedAt = 0
+  private addressedAt = 0
   private initialized = false
   private stopped = false
   private timer: ReturnType<typeof setTimeout> | undefined
@@ -143,7 +148,9 @@ export class CrewMessagingService {
       if (!this.initialized) { await this.initialize(); return }
       const lease = await this.ensureLease()
       await this.ensureWorkbenchBinding(lease, (await this.fabric.listBindings()).addresses)
-      await this.enqueueAddressing()
+      // Discovery reads every persisted session header, so it follows session
+      // lifecycle events and only rescans here as a slow safety net.
+      if (Date.now() - this.addressedAt >= this.config.discoveryMs) await this.enqueueAddressing()
       await this.reconcileWorkbench()
       await Promise.all(this.effective.map(binding => this.pumpSession(binding.sessionId)))
       await this.pumpWorkbench()
@@ -176,6 +183,7 @@ export class CrewMessagingService {
   }
   private async refreshAddressing(): Promise<void> {
     if (this.stopped) return
+    this.addressedAt = Date.now()
     const discovered = this.discovery === undefined ? [] : (await this.discovery.discover())
       .filter(binding => addressKey(binding.address) !== addressKey(this.config.workbenchAddress))
     const desired = effectiveBindings(this.configuredBindings, discovered)
@@ -253,9 +261,17 @@ export class CrewMessagingService {
     const lease = await this.ensureLease()
     let agent = this.runtime.live(sessionId)
     const availability = agent?.status === 'running' ? 'busy' : agent === undefined ? 'inactive' : 'idle'
-    const claimed = await this.fabric.claim({ adapter_id: this.config.adapterId, lease_token: lease.lease_token, operation_id: operation(`${binding.address}:${Date.now()}`, 'claim'), recipient_address: binding.address, recipient_generation: await this.generation(binding.address), availability, claim_duration: this.config.claimDuration })
+    const generation = await this.generation(binding.address)
+    const head = await this.queuedHead(binding.address, generation)
+    if (head === undefined) return
+    const claimed = await this.fabric.claim({ adapter_id: this.config.adapterId, lease_token: lease.lease_token, operation_id: claimOperation(head, 'claim', availability), recipient_address: binding.address, recipient_generation: generation, availability, claim_duration: this.config.claimDuration })
     if (!claimed.claimed || claimed.delivery === undefined || claimed.message === undefined || claimed.claim_token === undefined) return
     await this.dispatch(claimed, sessionId)
+  }
+  /** Polls read the head first so an empty mailbox costs no claim write. */
+  private async queuedHead(address: string, generation: number): Promise<Delivery | undefined> {
+    const { delivery } = await this.fabric.head(address, generation)
+    return delivery?.state === 'queued' ? delivery : undefined
   }
   private async generation(address: string): Promise<number> { const bindings = await this.fabric.listBindings(); const binding = bindings.addresses.find(item => item.address === address); if (binding === undefined) throw new Error(`crew messaging: binding ${address} disappeared`); return binding.generation }
   private async dispatch(claimed: Claim, sessionId: string): Promise<void> {
@@ -285,10 +301,13 @@ export class CrewMessagingService {
   private async pumpWorkbench(): Promise<void> {
     if (this.stopped) return
     const lease = await this.ensureLease()
+    const generation = await this.generation(this.config.workbenchAddress)
+    const head = await this.queuedHead(this.config.workbenchAddress, generation)
+    if (head === undefined) return
     const claimed = await this.fabric.claim({
       adapter_id: this.config.adapterId, lease_token: lease.lease_token,
-      operation_id: operation(`${this.config.workbenchAddress}:${Date.now()}`, 'workbench-claim'),
-      recipient_address: this.config.workbenchAddress, recipient_generation: await this.generation(this.config.workbenchAddress),
+      operation_id: claimOperation(head, 'workbench-claim', 'idle'),
+      recipient_address: this.config.workbenchAddress, recipient_generation: generation,
       availability: 'idle', claim_duration: this.config.claimDuration,
     })
     if (!claimed.claimed || claimed.delivery === undefined || claimed.claim_token === undefined) return

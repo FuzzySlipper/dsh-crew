@@ -34,6 +34,8 @@ interface CrewMessagingConfig {
   pollMs?: number;
   claimDuration?: string;
   ttl?: string;
+  /** Safety rescan interval for the session directory; lifecycle events refresh it sooner. */
+  discoveryMs?: number;
   acceptanceTimeoutMs?: number;
   acceptancePollMs?: number;
   reviewerProfilePath?: string;

@@ -33,12 +33,19 @@ class FakeFabric implements Fabric {
     return next
   }
   async submit(body: Record<string, unknown>): Promise<{ message: Message; delivery: Delivery; replayed: boolean }> { this.submitted.push(body); return { message: envelope('out', String(body.recipient_address)), delivery: delivery('out', String(body.recipient_address)), replayed: this.submitted.length > 1 } }
-  async claim(): Promise<Claim> { return this.queue.shift() ?? { claimed: false, replayed: false } }
+  readonly claims: Record<string, unknown>[] = []
+  async claim(body: Record<string, unknown>): Promise<Claim> { this.claims.push(body); return this.queue.shift() ?? { claimed: false, replayed: false } }
   async begin(deliveryId: string): Promise<Delivery> { this.begun.push(deliveryId); return delivery(deliveryId) }
   async release(deliveryId: string): Promise<Delivery> { this.released.push(deliveryId); return delivery(deliveryId) }
   async acknowledge(deliveryId: string): Promise<Delivery> { this.acked.push(deliveryId); return delivery(deliveryId) }
   async unknown(deliveryId: string): Promise<Delivery> { this.unknowns.push(deliveryId); return delivery(deliveryId) }
   async deliveries(): Promise<{ deliveries: Delivery[] }> { return { deliveries: this.dispatching } }
+  /** Any queued claim stands for queued work at the head, as `claim` ignores the address. */
+  async head(address: string): Promise<{ delivery: Delivery | null }> {
+    const next = this.queue[0]
+    if (next === undefined) return { delivery: null }
+    return { delivery: { ...(next.delivery ?? delivery('pending', address)), state: 'queued', attempt_count: 0 } }
+  }
 }
 
 class FakeRuntime implements CrewRuntime {
@@ -57,8 +64,10 @@ class FakeRuntime implements CrewRuntime {
 class FakeDiscovery implements AddressDiscovery {
   values: readonly DiscoveredBinding[] = []
   failure: Error | undefined
+  scans = 0
   readonly listeners = new Set<() => void>()
   async discover(): Promise<readonly DiscoveredBinding[]> {
+    this.scans += 1
     if (this.failure !== undefined) throw this.failure
     return this.values
   }
@@ -126,6 +135,20 @@ describe('CrewMessagingService', () => {
     expect(runtime.resumes).toEqual([]); expect(runtime.accepted.size).toBe(0)
     await adapter.dispose()
   })
+  it('rescans the session directory on ticks only after the discovery interval, and at once on a lifecycle change', async () => {
+    const fabric = new FakeFabric(); const runtime = new FakeRuntime(); const discovery = new FakeDiscovery()
+    const adapter = new CrewMessagingService(fabric, runtime, { pollMs: 60_000, discoveryMs: 60_000 }, discovery)
+    await adapter.start(); expect(discovery.scans).toBe(1)
+    await (adapter as any).tick(); await (adapter as any).tick()
+    expect(discovery.scans).toBe(1)
+    discovery.change([{ address: 'bravo', sessionId: 's1' }]); await (adapter as any).addressingTail
+    expect(discovery.scans).toBe(2); expect(adapter.addresses('s1')).toEqual(['bravo'])
+    await adapter.dispose()
+    const eager = new CrewMessagingService(new FakeFabric(), new FakeRuntime(), { pollMs: 60_000, discoveryMs: 0 }, discovery)
+    await eager.start(); await (eager as any).tick()
+    expect(discovery.scans).toBe(4)
+    await eager.dispose()
+  })
   it('reconciles only the adapter-owned stable workbench receipt attempt on an ordinary tick', async () => {
     const fabric = new FakeFabric(); const runtime = new FakeRuntime(); const adapter = new CrewMessagingService(fabric, runtime, { pollMs: 60_000 })
     await adapter.start()
@@ -160,6 +183,18 @@ describe('CrewMessagingService', () => {
       expect(runtime.accepted.get('s2')?.[0]?.source.deliveryId).toBe('after-retry')
       await adapter.dispose()
     } finally { vi.useRealTimers() }
+  })
+  it('reads the mailbox head and makes no claim write while nothing is queued', async () => {
+    const [adapter, fabric, runtime] = service(); runtime.agents.set('s2', runtime.agent('s2', 'idle')); await adapter.start()
+    await (adapter as any).pumpSession('s2'); await (adapter as any).pumpWorkbench()
+    expect(fabric.claims).toEqual([])
+    await adapter.dispose()
+  })
+  it('names a claim after its observed head attempt and availability, never the clock', async () => {
+    const [adapter, fabric, runtime] = service(); runtime.agents.set('s2', runtime.agent('s2', 'running'))
+    fabric.queue.push({ claimed: true, replayed: false, delivery: delivery('d-stable'), message: envelope('m-stable'), claim_token: 'claim' }); await adapter.start(); await (adapter as any).pumpSession('s2')
+    expect(fabric.claims.map(body => body.operation_id)).toEqual(['dsh-crew:d-stable:claim:1:busy'])
+    await adapter.dispose()
   })
   it('uses next-turn followup for a busy target and never invokes a steering surface', async () => {
     const [adapter, fabric, runtime] = service(); runtime.agents.set('s2', runtime.agent('s2', 'running'))

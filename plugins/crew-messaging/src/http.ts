@@ -37,4 +37,5 @@ export class FabricClient {
   acknowledge(deliveryId: string, body: Record<string, unknown>): Promise<Delivery> { return this.call(`/v1/deliveries/${encodeURIComponent(deliveryId)}/acknowledge`, 'POST', body) }
   unknown(deliveryId: string, body: Record<string, unknown>): Promise<Delivery> { return this.call(`/v1/deliveries/${encodeURIComponent(deliveryId)}/outcome-unknown`, 'POST', body) }
   deliveries(): Promise<{ deliveries: Delivery[] }> { return this.call('/v1/deliveries') }
+  head(address: string, generation: number): Promise<{ delivery: Delivery | null }> { return this.call(`/v1/mailbox/${encodeURIComponent(address)}/head?generation=${generation}`) }
 }
