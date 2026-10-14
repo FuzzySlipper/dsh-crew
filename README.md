@@ -76,7 +76,7 @@ Explore the missing step between deployment-level loop replacement and true per-
 
 ## Current investigation
 
-[Remote DSH Web over SSH](docs/trusted-lan-web.md) (Den task 7117) records the chosen loopback-only service and workstation forwarding arrangement. Direct LAN exposure remains deferred unless a product need cannot use SSH.
+[DSH on den-agents](docs/local-installation.md) describes the current clean upstream checkout, user service, LAN forwarding, profiles, plugins, and update commands. [Remote DSH Web over SSH](docs/trusted-lan-web.md) retains the earlier SSH-forwarding setup.
 
 [Next Crew messaging runtime adapter](docs/next-runtime-adapter-survey.md)
 records why the first non-DSH slice should bridge `crew-services` into Rusty
