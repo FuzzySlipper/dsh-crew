@@ -50,10 +50,17 @@ when updating that plugin; do not replace it by matching its name on npm.
 The `comparison-sdk` profile also has thinking-effort installed. Its obsolete
 `backgroundMode` options and missing global Ralph override were removed.
 
-The Drift preset uses current managed subagent activations. Its old
-`backgroundMode` options have been removed. Its compaction configuration uses
-upstream `dsh-compaction-basic`; the discarded checkout's custom compaction
-code is not part of this installation.
+The Drift preset uses current managed subagent activations. `subagent_review`
+selects the dedicated `drift-reviewer` preset, which carries the reviewer persona
+and omits filesystem write/edit and delegation tools. Shell use remains governed
+by the read-only role instructions. `subagent_audit` keeps forked conversation
+history; current DSH requires it to inherit the parent preset and tools, so the
+lead supplies the read-only reviewer role in its task prompt. There is no
+fork-specific tool filter. The lead instructions describe that distinction.
+
+The old `backgroundMode`, per-tool `persona`, and `toolFilter` options have been
+removed. Compaction uses upstream `dsh-compaction-basic`; the discarded checkout's
+custom compaction code is not part of this installation.
 
 ## Updates and checks
 
@@ -80,3 +87,13 @@ old service/update scripts were backed up under
 `~/.dsh/backups/2026-10-13-clean-upstream`. The old source checkout and runtime
 worktree were removed after startup verification; no custom core patches were
 carried forward. Existing unrelated edits in the plugin repository were preserved.
+
+On 2026-10-17, the clean checkout fast-forwarded to upstream `687f282e86`
+(`0.2.1-rc.2`) and `dsh-web.service` was rebuilt and restarted. All nine upstream
+build checks, Crew host/client typechecks, and 87 Crew plugin tests passed.
+The Drift migration follows upstream's
+`docs/upgrade-guide/v0.2.1-alpha.1/subagent-preset-composition/guide.md`;
+its previous YAML is backed up at
+`~/.dsh/backups/2026-10-17-drift-migration/cordis.patch.yml`.
+The live LAN browser check also passed: saved history, model selection, Crew
+sessions, and activation of both Drift presets. No model prompt was submitted.
