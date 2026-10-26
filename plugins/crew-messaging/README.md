@@ -12,6 +12,12 @@ Every delivered model message starts with a compact JSON header containing `mess
 
 On restart the adapter inspects its own dispatching deliveries. A proven native identity is flushed and acknowledged; anything not provable is terminalized as `outcome_unknown`, never blindly redelivered. Lease tokens remain internal and are not exposed by the service or tools.
 
+## Current DSH compatibility
+
+Persisted-session discovery and delivery inspection consume `SessionHandle.read().events`; current DSH returns an event slice with ownership metadata rather than an event array.
+
+The v2-to-v3 session converter refuses historical messages with the custom `crew-messaging` source kind. The adapter retains its fail-on-catalog-error behavior, so an unreadable root can prevent initial dynamic discovery even when the web UI and fabric are healthy. The owning converter is `/home/system/dsh/packages/session/session-format-v2-to-v3/src/payload.ts` (`assertSource`). On September 10, 2026, the owner authorized purging the three blocking test conversations; after their removal, the adapter initialized and connected successfully. Retaining affected historical conversations would require an upstream migration policy for extension-owned message sources.
+
 ## Local current-source use
 
 From the `dsh-crew` repository root, use the system checkout's installed toolchain. Override `DSH_SOURCE_DIR` on boxes that keep DSH elsewhere:

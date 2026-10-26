@@ -2501,7 +2501,7 @@ var DshRuntime = class {
 			else {
 				const handle = await persistence.open(snapshot.header.id, "read");
 				try {
-					const binding = discoveredFromEvents(sessionId, handle.header.origin, await handle.read());
+					const binding = discoveredFromEvents(sessionId, handle.header.origin, (await handle.read()).events);
 					nextCold.set(sessionId, {
 						revision: snapshot.revision,
 						binding
@@ -2555,7 +2555,7 @@ var DshRuntime = class {
 		try {
 			const handle = await persistence.open(sessionId, "read");
 			try {
-				return acceptedMessages(await handle.read());
+				return acceptedMessages((await handle.read()).events);
 			} finally {
 				await handle.close();
 			}

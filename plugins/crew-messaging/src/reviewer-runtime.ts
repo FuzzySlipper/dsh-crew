@@ -8,7 +8,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
-import type {} from '@deepseek-ai/dsh-agent-presets'
+import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap { 'reviewer-runtime': { kind: 'reviewer-runtime'; runId: string } }

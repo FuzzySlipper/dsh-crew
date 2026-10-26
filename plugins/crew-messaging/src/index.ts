@@ -7,7 +7,7 @@ import type {} from '@deepseek-ai/dsh-session-persistence'
 import { foldSessionTitle } from '@deepseek-ai/dsh-session-title'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
-import type {} from '@deepseek-ai/dsh-agent-presets'
+import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import { FabricClient } from './http.ts'
 import { CrewMessagingService, type CrewMessagingConfig, type CrewMessagingStatus, type DirectoryEntry, type NativeMessage, type RuntimeAgent } from './service.ts'
 import type { AddressDiscovery, DiscoveredBinding } from './addressing.ts'
@@ -131,7 +131,7 @@ class DshRuntime implements AddressDiscovery {
       } else {
         const handle = await persistence.open(snapshot.header.id, 'read')
         try {
-          const binding = discoveredFromEvents(sessionId, handle.header.origin, await handle.read())
+          const binding = discoveredFromEvents(sessionId, handle.header.origin, (await handle.read()).events)
           nextCold.set(sessionId, { revision: snapshot.revision, binding })
         } finally {
           await handle.close()
@@ -170,7 +170,7 @@ class DshRuntime implements AddressDiscovery {
     if (persistence === undefined) return undefined
     try {
       const handle = await persistence.open(sessionId as SessionId, 'read')
-      try { return acceptedMessages(await handle.read()) } finally { await handle.close() }
+      try { return acceptedMessages((await handle.read()).events) } finally { await handle.close() }
     } catch { return undefined }
   }
   async flush(agent: RuntimeAgent): Promise<boolean> { return await this.ctx.sessions.flush((agent as DshAgent).agent.session) }
