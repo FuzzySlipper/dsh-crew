@@ -9,12 +9,13 @@ MCP server alongside the installed Go service.
 
 Working single-slot prototype for den-srv. The target service owns the lease, input timing, cancellation, and session cleanup. The agent-side Python MCP server owns a private Xvfb/Moonlight viewer and durable screenshots. DSH connects through its existing Cordis MCP plugin; no DSH source changes are needed.
 
-**Current default:** the Go workflow uses Gamescope/XWayland kiosk Firefox.
-Native coordinate clicks, repeated pointer lock, exact relative deltas, and
-CraftSurvive mouse yaw/pitch are now verified alongside keyboard/controller
-input. See [Gamescope configuration and evidence](../gamescope/refinement-2026-09-08.md).
-The nested-Sway [pointer reproduction](pointer-routing.md) and Python workflow
-below are historical. Earlier controller acceptance remains in
+**Retired:** the Wolf/Moonlight playtest backend, including the later
+Gamescope/XWayland kiosk Firefox experiment, is no longer used; the live
+playtest service runs browser and engine backends only. The Gamescope experiment
+and its evidence were removed from this repo (see git history; evidence archived
+at /data/evidence/dsh-crew/wolf-gamescope/). The nested-Sway
+[pointer reproduction](pointer-routing.md) and Python workflow below are
+historical. Earlier controller acceptance remains in
 [Xbox setup and evidence](virtual-xbox.md); these are bounded checks, not general
 game health certification.
 
