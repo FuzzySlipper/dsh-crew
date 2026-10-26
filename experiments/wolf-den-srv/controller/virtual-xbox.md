@@ -1,5 +1,8 @@
 # Virtual Xbox pilot
 
+For new tests use the [Go/JS playtest runbook](/home/dev/crew-services/docs/playtest.md).
+The setup/evidence below explains the native Xbox path and the original pilot.
+
 The controller now accepts native Wolf Xbox packets through `input`:
 
 ```json

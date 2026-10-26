@@ -1,5 +1,10 @@
 # Remaining pointer-routing issue
 
+Historical Sway diagnosis. The default Go playtest workflow now uses
+[Gamescope/XWayland kiosk Firefox](../gamescope/refinement-2026-09-08.md), with
+verified native clicks and FPS look. The Sway defect described below was not
+patched or re-certified by that configuration change.
+
 Observed 2026-09-07 UTC with Wolf stable, its stock Firefox application running under nested Sway, RX 9070 XT, and a 1280×720 Moonlight stream. The configured client mouse acceleration is 1.0. Keyboard navigation and Ctrl+L/typing worked before pointer clicks.
 
 ## Reproduction and evidence

@@ -4,10 +4,7 @@
       config:
         serverName: playtest
         transport: stdio
-        command: /home/dev/dsh-crew/experiments/wolf-den-srv/controller/.venv/bin/python
-        args:
-          - /home/dev/dsh-crew/experiments/wolf-den-srv/controller/server.py
-          - --config
-          - /home/dev/dsh-crew/experiments/wolf-den-srv/controller/config.json
-        toolCallTimeoutMs: 90000
+        command: /home/agent/.local/bin/playtest
+        args: [mcp]
+        toolCallTimeoutMs: 120000
         failOnStartupError: true

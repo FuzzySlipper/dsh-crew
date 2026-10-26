@@ -1,8 +1,22 @@
 # Wolf agent controller
 
+**The current agent workflow has moved to the Go service in
+[crew-services](/home/dev/crew-services/docs/playtest.md).** Use `playtest games`,
+`playtest start GAME`, and the shared CLI/MCP session tools there. The Cordis
+patch in this directory now connects to that service. The Python code and the
+remaining instructions below describe the earlier prototype; do not start its
+MCP server alongside the installed Go service.
+
 Working single-slot prototype for den-srv. The target service owns the lease, input timing, cancellation, and session cleanup. The agent-side Python MCP server owns a private Xvfb/Moonlight viewer and durable screenshots. DSH connects through its existing Cordis MCP plugin; no DSH source changes are needed.
 
-**Current acceptance limit:** capture, keyboard navigation, cancellation, and lifecycle work. Native virtual Xbox analog flight is verified in Rusty Space, and FPS movement, look, jump, crouch, and sprint in CraftSurvive; see [Xbox setup and evidence](virtual-xbox.md). Mouse targeting inside the stock nested-Sway Firefox app is unreliable: the streamed cursor can disagree with Sway's effective cursor. See [the focused reproduction](pointer-routing.md). FPS controller testing is accepted for that bounded CraftSurvive path; mouse aiming remains unaccepted.
+**Current default:** the Go workflow uses Gamescope/XWayland kiosk Firefox.
+Native coordinate clicks, repeated pointer lock, exact relative deltas, and
+CraftSurvive mouse yaw/pitch are now verified alongside keyboard/controller
+input. See [Gamescope configuration and evidence](../gamescope/refinement-2026-09-08.md).
+The nested-Sway [pointer reproduction](pointer-routing.md) and Python workflow
+below are historical. Earlier controller acceptance remains in
+[Xbox setup and evidence](virtual-xbox.md); these are bounded checks, not general
+game health certification.
 
 ```text
 DSH / another MCP client
