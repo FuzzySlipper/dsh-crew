@@ -1,5 +1,6 @@
 /** Browser half of the Crew messaging plugin. */
 import { CrewCockpit } from './CrewCockpit.tsx';
+import { CrewReviewDrawerController, CrewReviewOverlay, CrewReviewTrigger } from './CrewReviewDrawer.tsx';
 import { CrewSessionWorkbenchController } from './CrewSessionWorkbench.ts';
 import { CrewSessionWorkbenchOverlay, CrewSessionWorkbenchTrigger } from './CrewSessionWorkbenchView.tsx';
 interface ClientContext {
@@ -33,11 +34,28 @@ interface ClientContext {
                 controller: CrewSessionWorkbenchController;
             };
         }, component: typeof CrewSessionWorkbenchOverlay): () => void;
+        register(options: {
+            name: 'sidebar.footer.action';
+            id: string;
+            order: number;
+            label: string;
+            inject: () => {
+                controller: CrewReviewDrawerController;
+            };
+        }, component: typeof CrewReviewTrigger): () => void;
+        register(options: {
+            name: 'shell.overlay';
+            id: string;
+            order: number;
+            inject: () => {
+                controller: CrewReviewDrawerController;
+            };
+        }, component: typeof CrewReviewOverlay): () => void;
     };
 }
 /** The services required to contribute a global Settings section. */
 export declare const inject: string[];
-/** Register independent messaging and review settings once the shell is present. */
+/** Register the messaging Settings section and the sidebar session and review drawers. */
 export declare function apply(ctx: ClientContext): void;
 export {};
 //# sourceMappingURL=index.d.ts.map

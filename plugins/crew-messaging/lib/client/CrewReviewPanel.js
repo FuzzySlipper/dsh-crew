@@ -5,7 +5,18 @@ import css from "./CrewCockpit.styles.js";
 export const CREW_REVIEW_DASHBOARD_ENDPOINT = '/plugins/dsh-crew-messaging/review-pool';
 export const CREW_REVIEW_AFFINITY_ENDPOINT = '/plugins/dsh-crew-messaging/review-affinity';
 export const CREW_REVIEW_RETRY_ENDPOINT = '/plugins/dsh-crew-messaging/review-retry';
+export const CREW_REVIEW_CHECK_ENDPOINT = '/plugins/dsh-crew-messaging/review-check';
 const POLL_MS = 5_000;
+/** Decode one reviewer runtime check and discard unknown fields. */
+export function decodeCrewReviewCheck(value) {
+    if (!isObject(value) || typeof value.ok !== 'boolean' || typeof value.backend !== 'string' || typeof value.detail !== 'string' || typeof value.checkedAt !== 'string')
+        return undefined;
+    return {
+        ok: value.ok, backend: value.backend, detail: value.detail, checkedAt: value.checkedAt,
+        ...(typeof value.workspace === 'string' ? { workspace: value.workspace } : {}),
+        ...(typeof value.command === 'string' ? { command: value.command } : {}),
+    };
+}
 /** Decode only the plugin-owned review projection and discard unknown fields. */
 export function decodeCrewReviewDashboard(value) {
     if (!isObject(value) || !isObject(value.health) || typeof value.backend !== 'string'
@@ -119,10 +130,38 @@ export function CrewReviewPanel() {
     if (state.kind === 'error')
         return _jsxs("section", { className: css.panel, "data-crew-review": true, children: [_jsxs("div", { className: css.reviewHeader, children: [_jsx("h3", { children: "Crew review pool" }), _jsx("button", { type: "button", className: css.secondary, onClick: () => { setRefresh(value => value + 1); }, children: "Refresh" })] }), _jsxs("p", { className: css.error, children: ["Crew review service is unavailable: ", state.message] })] });
     const snapshot = state.snapshot;
-    return _jsxs("section", { className: css.panel, "data-crew-review": true, children: [_jsxs("div", { className: css.reviewHeader, children: [_jsxs("div", { children: [_jsx("h3", { children: "Crew review pool" }), _jsxs("p", { className: css.reviewDescription, children: ["Private reviewer workers and recent Den review outcomes. Findings stay in Den. Last refreshed ", state.refreshedAt, "."] })] }), _jsx("button", { type: "button", className: css.secondary, onClick: () => { setRefresh(value => value + 1); }, children: "Refresh status" })] }), _jsxs("div", { className: css.reviewStatus, children: [_jsx(Status, { label: "Service", value: snapshot.health.ready ? snapshot.health.status : 'unavailable', good: snapshot.health.ready }), _jsx(Status, { label: "Backend", value: snapshot.backend, good: snapshot.backend !== 'unavailable' }), _jsx(Status, { label: "Running jobs", value: `${String(snapshot.running)} / ${String(snapshot.capacity)}`, good: snapshot.running <= snapshot.capacity }), _jsx(Status, { label: "Finalizing", value: String(snapshot.finalizing), good: snapshot.finalizing === 0 }), _jsx(Status, { label: "Queued", value: String(snapshot.queued), good: snapshot.queued === 0 })] }), snapshot.failures.length > 0 ? _jsx(ReviewFailures, { failures: snapshot.failures, retrying: retrying, error: retryError, onRetry: retry }) : _jsx("p", { className: css.empty, children: "No unresolved review failures." }), _jsx(ReviewJobs, { title: "Active jobs", empty: "No active review jobs.", jobs: snapshot.active }), _jsx(ReviewJobs, { jobs: snapshot.recent }), _jsxs("section", { className: css.reviewAffinities, children: [_jsx("h4", { children: "Retained reviewers" }), snapshot.affinities.length === 0 ? _jsx("p", { className: css.empty, children: "No idle task affinities." }) : _jsx("div", { className: css.reviewAffinityRows, children: snapshot.affinities.map(affinity => {
+    return _jsxs("section", { className: css.panel, "data-crew-review": true, children: [_jsxs("div", { className: css.reviewHeader, children: [_jsxs("div", { children: [_jsx("h3", { children: "Crew review pool" }), _jsxs("p", { className: css.reviewDescription, children: ["Private reviewer workers and recent Den review outcomes. Findings stay in Den. Last refreshed ", state.refreshedAt, "."] })] }), _jsx("button", { type: "button", className: css.secondary, onClick: () => { setRefresh(value => value + 1); }, children: "Refresh status" })] }), _jsxs("div", { className: css.reviewStatus, children: [_jsx(Status, { label: "Service", value: snapshot.health.ready ? snapshot.health.status : 'unavailable', good: snapshot.health.ready }), _jsx(Status, { label: "Backend", value: snapshot.backend, good: snapshot.backend !== 'unavailable' }), _jsx(Status, { label: "Running jobs", value: `${String(snapshot.running)} / ${String(snapshot.capacity)}`, good: snapshot.running <= snapshot.capacity }), _jsx(Status, { label: "Finalizing", value: String(snapshot.finalizing), good: snapshot.finalizing === 0 }), _jsx(Status, { label: "Queued", value: String(snapshot.queued), good: snapshot.queued === 0 })] }), _jsx(ReviewRuntimeCheck, {}), snapshot.failures.length > 0 ? _jsx(ReviewFailures, { failures: snapshot.failures, retrying: retrying, error: retryError, onRetry: retry }) : _jsx("p", { className: css.empty, children: "No unresolved review failures." }), _jsx(ReviewJobs, { title: "Active jobs", empty: "No active review jobs.", jobs: snapshot.active }), _jsx(ReviewJobs, { jobs: snapshot.recent }), _jsxs("section", { className: css.reviewAffinities, children: [_jsx("h4", { children: "Retained reviewers" }), snapshot.affinities.length === 0 ? _jsx("p", { className: css.empty, children: "No idle task affinities." }) : _jsx("div", { className: css.reviewAffinityRows, children: snapshot.affinities.map(affinity => {
                             const key = `${affinity.projectId}:${String(affinity.taskId)}`;
                             return _jsxs("div", { className: css.reviewAffinityRow, children: [_jsxs("span", { children: [_jsxs("strong", { children: [affinity.projectId, " / task ", String(affinity.taskId)] }), _jsxs("small", { children: ["expires ", affinity.expiresAt] })] }), _jsx("button", { type: "button", className: css.secondary, disabled: releasing !== undefined, onClick: () => { void release(affinity); }, children: releasing === key ? 'Releasing…' : 'Release' })] }, key);
                         }) }), releaseError === undefined ? null : _jsx("p", { className: css.error, children: releaseError })] })] });
+}
+/** Run the reviewer sandbox probe on request and show its exact output. */
+function ReviewRuntimeCheck() {
+    const [checking, setChecking] = useState(false);
+    const [result, setResult] = useState();
+    const [error, setError] = useState();
+    const check = async () => {
+        setChecking(true);
+        setError(undefined);
+        try {
+            const response = await fetch(CREW_REVIEW_CHECK_ENDPOINT, { method: 'POST', headers: { accept: 'application/json' }, cache: 'no-store' });
+            const value = await response.json().catch(() => undefined);
+            if (!response.ok)
+                throw new Error(isObject(value) && typeof value.error === 'string' ? value.error : `check failed (${String(response.status)})`);
+            const decoded = decodeCrewReviewCheck(value);
+            if (decoded === undefined)
+                throw new Error('received an invalid review check response');
+            setResult(decoded);
+        }
+        catch (caught) {
+            setResult(undefined);
+            setError(caught instanceof Error ? caught.message : 'check failed');
+        }
+        finally {
+            setChecking(false);
+        }
+    };
+    return _jsxs("section", { className: css.reviewJobs, children: [_jsxs("div", { className: css.reviewHeader, children: [_jsxs("div", { children: [_jsx("h4", { children: "Reviewer sandbox" }), _jsx("p", { className: css.reviewDescription, children: "Runs one read-only command where reviewers run theirs. A broken sandbox lets review turns finish without inspecting the code." })] }), _jsx("button", { type: "button", className: css.secondary, disabled: checking, onClick: () => { void check(); }, children: checking ? 'Checking…' : 'Check reviewer sandbox' })] }), error === undefined ? null : _jsx("p", { className: css.error, children: error }), result === undefined ? null : _jsxs("article", { className: css.reviewJobRow, children: [_jsxs("div", { children: [_jsx("strong", { children: result.ok ? 'Reviewers can run commands' : 'Reviewers cannot run commands' }), _jsx("span", { className: result.ok ? css.good : css.error, children: result.ok ? 'ok' : 'failed' })] }), _jsx("p", { className: result.ok ? '' : css.error, children: result.detail }), _jsxs("small", { children: [result.backend, result.workspace === undefined ? '' : ` · ${result.workspace}`, " \u00B7 ", result.checkedAt] }), result.command === undefined ? null : _jsx("small", { children: _jsx("code", { children: result.command }) })] })] });
 }
 function ReviewJobs({ jobs, title = 'Recent verdicts', empty = 'No completed review jobs.' }) {
     return _jsxs("section", { className: css.reviewJobs, children: [_jsx("h4", { children: title }), jobs.length === 0 ? _jsx("p", { className: css.empty, children: empty }) : _jsx("div", { className: css.reviewJobRows, children: jobs.map(job => _jsxs("article", { className: css.reviewJobRow, children: [_jsxs("div", { children: [_jsxs("strong", { children: [job.projectId, " / task ", String(job.taskId)] }), _jsx("span", { className: job.verdict === 'looks_good' ? css.good : job.verdict === 'changes_requested' ? css.warning : '', children: job.verdict ?? job.state })] }), _jsxs("small", { children: ["round ", String(job.reviewRoundId), " \u00B7 ", job.updatedAt] }), job.failure === undefined ? null : _jsx("p", { className: css.error, children: job.failure })] }, job.id)) })] });

@@ -287,7 +287,20 @@ window.__ModuleLoader__.load({
 		const CREW_REVIEW_DASHBOARD_ENDPOINT = "/plugins/dsh-crew-messaging/review-pool";
 		const CREW_REVIEW_AFFINITY_ENDPOINT = "/plugins/dsh-crew-messaging/review-affinity";
 		const CREW_REVIEW_RETRY_ENDPOINT = "/plugins/dsh-crew-messaging/review-retry";
+		const CREW_REVIEW_CHECK_ENDPOINT = "/plugins/dsh-crew-messaging/review-check";
 		const POLL_MS = 5e3;
+		/** Decode one reviewer runtime check and discard unknown fields. */
+		function decodeCrewReviewCheck(value) {
+			if (!isObject(value) || typeof value.ok !== "boolean" || typeof value.backend !== "string" || typeof value.detail !== "string" || typeof value.checkedAt !== "string") return void 0;
+			return {
+				ok: value.ok,
+				backend: value.backend,
+				detail: value.detail,
+				checkedAt: value.checkedAt,
+				...typeof value.workspace === "string" ? { workspace: value.workspace } : {},
+				...typeof value.command === "string" ? { command: value.command } : {}
+			};
+		}
 		/** Decode only the plugin-owned review projection and discard unknown fields. */
 		function decodeCrewReviewDashboard(value) {
 			if (!isObject(value) || !isObject(value.health) || typeof value.backend !== "string" || !nonNegativeInteger(value.capacity) || !nonNegativeInteger(value.queued) || !nonNegativeInteger(value.running) || !nonNegativeInteger(value.finalizing) || typeof value.health.ready !== "boolean" || typeof value.health.status !== "string" || !Array.isArray(value.active) || !Array.isArray(value.recent) || !Array.isArray(value.affinities) || !Array.isArray(value.failures)) return void 0;
@@ -478,6 +491,7 @@ window.__ModuleLoader__.load({
 							})
 						]
 					}),
+					(0, react_jsx_runtime.jsx)(ReviewRuntimeCheck, {}),
 					snapshot.failures.length > 0 ? (0, react_jsx_runtime.jsx)(ReviewFailures, {
 						failures: snapshot.failures,
 						retrying,
@@ -526,6 +540,77 @@ window.__ModuleLoader__.load({
 								className: css.error,
 								children: releaseError
 							})
+						]
+					})
+				]
+			});
+		}
+		/** Run the reviewer sandbox probe on request and show its exact output. */
+		function ReviewRuntimeCheck() {
+			const [checking, setChecking] = (0, react.useState)(false);
+			const [result, setResult] = (0, react.useState)();
+			const [error, setError] = (0, react.useState)();
+			const check = async () => {
+				setChecking(true);
+				setError(void 0);
+				try {
+					const response = await fetch(CREW_REVIEW_CHECK_ENDPOINT, {
+						method: "POST",
+						headers: { accept: "application/json" },
+						cache: "no-store"
+					});
+					const value = await response.json().catch(() => void 0);
+					if (!response.ok) throw new Error(isObject(value) && typeof value.error === "string" ? value.error : `check failed (${String(response.status)})`);
+					const decoded = decodeCrewReviewCheck(value);
+					if (decoded === void 0) throw new Error("received an invalid review check response");
+					setResult(decoded);
+				} catch (caught) {
+					setResult(void 0);
+					setError(caught instanceof Error ? caught.message : "check failed");
+				} finally {
+					setChecking(false);
+				}
+			};
+			return (0, react_jsx_runtime.jsxs)("section", {
+				className: css.reviewJobs,
+				children: [
+					(0, react_jsx_runtime.jsxs)("div", {
+						className: css.reviewHeader,
+						children: [(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("h4", { children: "Reviewer sandbox" }), (0, react_jsx_runtime.jsx)("p", {
+							className: css.reviewDescription,
+							children: "Runs one read-only command where reviewers run theirs. A broken sandbox lets review turns finish without inspecting the code."
+						})] }), (0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							className: css.secondary,
+							disabled: checking,
+							onClick: () => {
+								check();
+							},
+							children: checking ? "Checking…" : "Check reviewer sandbox"
+						})]
+					}),
+					error === void 0 ? null : (0, react_jsx_runtime.jsx)("p", {
+						className: css.error,
+						children: error
+					}),
+					result === void 0 ? null : (0, react_jsx_runtime.jsxs)("article", {
+						className: css.reviewJobRow,
+						children: [
+							(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("strong", { children: result.ok ? "Reviewers can run commands" : "Reviewers cannot run commands" }), (0, react_jsx_runtime.jsx)("span", {
+								className: result.ok ? css.good : css.error,
+								children: result.ok ? "ok" : "failed"
+							})] }),
+							(0, react_jsx_runtime.jsx)("p", {
+								className: result.ok ? "" : css.error,
+								children: result.detail
+							}),
+							(0, react_jsx_runtime.jsxs)("small", { children: [
+								result.backend,
+								result.workspace === void 0 ? "" : ` · ${result.workspace}`,
+								" · ",
+								result.checkedAt
+							] }),
+							result.command === void 0 ? null : (0, react_jsx_runtime.jsx)("small", { children: (0, react_jsx_runtime.jsx)("code", { children: result.command }) })
 						]
 					})
 				]
@@ -649,6 +734,113 @@ window.__ModuleLoader__.load({
 				taskId: value.taskId,
 				expiresAt: value.expiresAt
 			}] : [];
+		}
+		//#endregion
+		//#region lib/client/CrewReviewDrawer.js
+		/** Sidebar footer action and drawer that put the Crew review pool one click away. */
+		/** Open/closed state shared by the footer action and the overlay drawer. */
+		var CrewReviewDrawerController = class {
+			open = false;
+			listeners = /* @__PURE__ */ new Set();
+			/** Element focused again when the drawer closes. */
+			returnTarget;
+			/** @returns Whether the drawer is open. */
+			getSnapshot() {
+				return this.open;
+			}
+			subscribe(listener) {
+				this.listeners.add(listener);
+				return () => {
+					this.listeners.delete(listener);
+				};
+			}
+			show() {
+				this.set(true);
+			}
+			close() {
+				this.set(false);
+			}
+			dispose() {
+				this.set(false);
+				this.listeners.clear();
+			}
+			set(open) {
+				if (this.open === open) return;
+				this.open = open;
+				for (const listener of this.listeners) listener();
+			}
+		};
+		/** Render the Crew review action in the DSH sidebar footer. */
+		function CrewReviewTrigger({ wide, controller }) {
+			const open = useOpen(controller);
+			const show = (event) => {
+				controller.returnTarget = event.currentTarget;
+				controller.show();
+			};
+			return (0, react_jsx_runtime.jsx)("button", {
+				type: "button",
+				className: "dshCrewSessionsTrigger",
+				"aria-label": "Open Crew review",
+				"aria-haspopup": "dialog",
+				"aria-expanded": open,
+				onClick: show,
+				children: wide ? "Crew review" : "Review"
+			});
+		}
+		/** Render the review pool in a drawer; the panel only polls while it is open. */
+		function CrewReviewOverlay({ controller }) {
+			const open = useOpen(controller);
+			const drawer = (0, react.useRef)(null);
+			const closeButton = (0, react.useRef)(null);
+			(0, react.useEffect)(() => {
+				if (!open || drawer.current === null) return;
+				closeButton.current?.focus();
+				const onKeyDown = (event) => {
+					if (event.key !== "Escape") return;
+					event.preventDefault();
+					controller.close();
+				};
+				const target = drawer.current.ownerDocument;
+				target.addEventListener("keydown", onKeyDown);
+				return () => {
+					target.removeEventListener("keydown", onKeyDown);
+					if (controller.returnTarget?.isConnected) controller.returnTarget.focus();
+				};
+			}, [controller, open]);
+			if (!open) return null;
+			return (0, react_jsx_runtime.jsx)("div", {
+				className: "dshCrewSessionsOverlay",
+				role: "presentation",
+				children: (0, react_jsx_runtime.jsxs)("section", {
+					ref: drawer,
+					className: "dshCrewSessionsDrawer dshCrewReviewDrawer",
+					role: "dialog",
+					"aria-modal": "false",
+					"aria-labelledby": "dsh-crew-review-title",
+					tabIndex: -1,
+					children: [(0, react_jsx_runtime.jsxs)("header", {
+						className: "dshCrewSessionsHeader",
+						children: [(0, react_jsx_runtime.jsxs)("div", { children: [(0, react_jsx_runtime.jsx)("h2", {
+							id: "dsh-crew-review-title",
+							children: "Crew review"
+						}), (0, react_jsx_runtime.jsx)("p", { children: "Reviewer pool, recent verdicts and failures, and a reviewer sandbox check." })] }), (0, react_jsx_runtime.jsx)("button", {
+							ref: closeButton,
+							type: "button",
+							className: "dshCrewSessionsButton",
+							onClick: () => {
+								controller.close();
+							},
+							children: "Close"
+						})]
+					}), (0, react_jsx_runtime.jsx)("div", {
+						className: "dshCrewReviewDrawerBody",
+						children: (0, react_jsx_runtime.jsx)(CrewReviewPanel, {})
+					})]
+				})
+			});
+		}
+		function useOpen(controller) {
+			return (0, react.useSyncExternalStore)((listener) => controller.subscribe(listener), () => controller.getSnapshot());
 		}
 		//#endregion
 		//#region lib/client/CrewSessionWorkbench.js
@@ -1355,6 +1547,7 @@ window.__ModuleLoader__.load({
 .dshCrewSessionsGrid{display:grid;grid-template-columns:minmax(220px,300px) minmax(0,1fr);gap:16px;height:calc(100% - 74px);margin-top:18px}.dshCrewSessionList,.dshCrewSessionTimeline{min-height:0;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1)}.dshCrewSessionList{overflow:auto;padding:8px}.dshCrewSessionList button{display:grid;width:100%;gap:4px;border:0;border-radius:7px;padding:10px;text-align:left;font:inherit;color:inherit;background:transparent;cursor:pointer}.dshCrewSessionList button[aria-current=true]{background:var(--dsw-alias-interactive-bg-hover)}.dshCrewSessionList small{color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}.dshCrewSessionTimeline{display:grid;grid-template-rows:auto minmax(0,1fr);overflow:hidden}.dshCrewSessionsToolbar{padding:12px;border-bottom:1px solid var(--dsw-alias-border-l2)}.dshCrewSessionEvents{display:grid;align-content:start;gap:10px;overflow:auto;padding:12px}.dshCrewSessionEvent{display:grid;gap:7px;border-left:2px solid var(--dsw-alias-brand-primary);padding:0 0 0 10px}.dshCrewSessionEvent header{display:flex;justify-content:space-between;gap:12px;font-size:13px}.dshCrewSessionEvent time,.dshCrewSessionEvent small{color:var(--dsw-alias-label-secondary);font-size:12px}.dshCrewSessionEvent pre{max-height:240px;overflow:auto;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-label-secondary)}.dshCrewSessionsState{border-radius:999px;padding:2px 8px;font-size:12px;background:var(--dsw-alias-bg-module-platform)}.dshCrewSessionsState[data-state=error]{color:var(--dsw-alias-state-error-primary)}
 .dshCrewSessionTimeline{grid-template-rows:auto auto minmax(0,1fr)}.dshCrewSessionPrompt{display:grid;gap:7px;padding:12px;border-bottom:1px solid var(--dsw-alias-border-l2)}.dshCrewSessionPrompt label{font-size:13px;font-weight:600}.dshCrewSessionPrompt textarea{box-sizing:border-box;width:100%;min-height:72px;resize:vertical;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;padding:8px;font:inherit;color:inherit;background:var(--dsw-alias-bg-layer-2)}.dshCrewSessionPrompt>div{display:flex;align-items:center;gap:8px}.dshCrewSessionsError{color:var(--dsw-alias-state-error-primary);font-size:12px}
 .dshCrewWorkbenchInbox{max-height:min(32vh,320px);overflow:auto}
+.dshCrewReviewDrawer{display:grid;grid-template-rows:auto minmax(0,1fr);width:min(760px,calc(100vw - 80px))}.dshCrewReviewDrawerBody{min-height:0;overflow:auto;margin-top:18px}
 @media(max-width:720px){.dshCrewSessionsDrawer{width:100%;padding:16px}.dshCrewSessionsGrid{grid-template-columns:1fr;grid-template-rows:minmax(150px,35%) minmax(0,1fr);height:calc(100% - 84px)}}
 `;
 		/** Install one owned style node for the current client plugin fiber. */
@@ -1713,7 +1906,7 @@ window.__ModuleLoader__.load({
 		/** Browser half of the Crew messaging plugin. */
 		/** The services required to contribute a global Settings section. */
 		const inject = ["slots"];
-		/** Register independent messaging and review settings once the shell is present. */
+		/** Register the messaging Settings section and the sidebar session and review drawers. */
 		function apply(ctx) {
 			ctx.slots.inject("settings.section", () => ctx.slots.register({
 				name: "settings.section",
@@ -1721,12 +1914,6 @@ window.__ModuleLoader__.load({
 				order: 35,
 				label: "Crew messaging"
 			}, CrewCockpit));
-			ctx.slots.inject("settings.section", () => ctx.slots.register({
-				name: "settings.section",
-				id: "crew-review",
-				order: 36,
-				label: "Crew review"
-			}, CrewReviewPanel));
 			const controller = new CrewSessionWorkbenchController(createCrewSessionWorkbenchPort(), (error) => {
 				ctx.logger.warn(error);
 			});
@@ -1754,6 +1941,24 @@ window.__ModuleLoader__.load({
 				order: 35,
 				inject: injected
 			}, CrewSessionWorkbenchOverlay));
+			const review = new CrewReviewDrawerController();
+			ctx.effect(() => () => {
+				review.dispose();
+			}, "crew-messaging: review drawer lifecycle");
+			const reviewInjected = () => ({ controller: review });
+			ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
+				name: "sidebar.footer.action",
+				id: "crew-review",
+				order: 36,
+				label: "Crew review",
+				inject: reviewInjected
+			}, CrewReviewTrigger));
+			ctx.slots.inject("shell.overlay", () => ctx.slots.register({
+				name: "shell.overlay",
+				id: "crew-review",
+				order: 36,
+				inject: reviewInjected
+			}, CrewReviewOverlay));
 		}
 		//#endregion
 		exports.apply = apply;
