@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 # Update the local DSH Crew installation without deleting profiles or service state.
+#
+# This refreshes DeepSeek Harness, its web-profile plugins and the in-process
+# dsh-crew-inject plugin, then restarts dsh-web.service only. It does not build,
+# install or restart any crew-services binary (crew-services #10379): deploy
+# those with crew-services scripts/deploy-crew-services.sh. crew-dsh reads the
+# new dsh web launch token and reconnects by itself after the restart.
 
 set -Eeuo pipefail
 
@@ -9,17 +15,12 @@ DSH_DIR="${DSH_SOURCE_DIR:-/home/system/dsh}"
 DSH_PROFILE_NAME="${DSH_PROFILE:-web}"
 INJECT_PLUGIN_DIR="$REPO_ROOT/plugins/crew-inject"
 
-if [[ -n "${CREW_SERVICES_DIR:-}" && "${CREW_SERVICES_DIR}" != /* ]]; then
-  CREW_SERVICES_DIR="$REPO_ROOT/$CREW_SERVICES_DIR"
-fi
-CREW_SERVICES_DIR="${CREW_SERVICES_DIR:-$REPO_ROOT/../crew-services}"
 DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
 CREW_BIN_DIR="${CREW_BIN_DIR:-$HOME/.local/bin}"
 export PATH="$CREW_BIN_DIR:$PATH"
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 PHASE="preflight"
-STAGE_DIR=""
 SERVICES_RESTARTED=0
 
 phase() {
@@ -42,12 +43,7 @@ on_error() {
   exit "$exit_code"
 }
 
-cleanup() {
-  [[ -z "$STAGE_DIR" ]] || rm -rf -- "$STAGE_DIR"
-}
-
 trap on_error ERR
-trap cleanup EXIT
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
@@ -268,23 +264,6 @@ link_plugin_dependencies() {
   rm -f -- "$workspace_packages"
 }
 
-build_service() {
-  local service=$1
-  local source_dir="$CREW_SERVICES_DIR/cmd/$service"
-
-  if [[ ! -d "$source_dir" ]]; then
-    printf 'Skipping %s: %s is not present.\n' "$service" "$source_dir"
-    return
-  fi
-
-  printf 'Building %s.\n' "$service"
-  (
-    cd -- "$CREW_SERVICES_DIR"
-    go build -o "$STAGE_DIR/$service" "./cmd/$service"
-  )
-  BUILT_SERVICES+=("$service")
-}
-
 restart_if_enabled() {
   local unit=$1
 
@@ -302,25 +281,14 @@ require_command git
 require_command node
 require_command pnpm
 require_command systemctl
-require_command install
 require_command mktemp
 require_command ln
 require_git_repo "$REPO_ROOT" "DSH Crew"
-require_git_repo "$CREW_SERVICES_DIR" "crew-services"
 require_git_repo "$DSH_DIR" "DeepSeek Harness"
 [[ -f "$DSH_DIR/package.json" ]] || die "DeepSeek Harness package.json is missing: $DSH_DIR/package.json"
 [[ -f "$INJECT_PLUGIN_DIR/package.json" ]] || die "Crew inject plugin is missing: $INJECT_PLUGIN_DIR"
 
-SERVICE_NAMES=(crew-messaging crew-review crew-codex crew-dsh)
-for service in "${SERVICE_NAMES[@]}"; do
-  if [[ -d "$CREW_SERVICES_DIR/cmd/$service" ]]; then
-    require_command go
-    break
-  fi
-done
-
 update_repo "DSH Crew" "$REPO_ROOT"
-update_repo "crew-services" "$CREW_SERVICES_DIR"
 update_repo "DeepSeek Harness" "$DSH_DIR"
 
 phase "Installing and building DeepSeek Harness"
@@ -337,15 +305,8 @@ install_dsh_launcher
 phase "Updating community plugins for profile $DSH_PROFILE_NAME"
 update_community_plugins
 
-phase "Building crew services"
-STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dsh-crew-update.XXXXXX")"
-BUILT_SERVICES=()
-for service in "${SERVICE_NAMES[@]}"; do
-  build_service "$service"
-done
-
-# The in-process dsh-crew-messaging plugin is retired: crew-dsh (built above
-# from crew-services) delivers crew messages through the dsh web session API.
+# The in-process dsh-crew-messaging plugin is retired: crew-dsh (deployed from
+# crew-services) delivers crew messages through the dsh web session API.
 # Drop it from a profile that still lists it.
 if grep -q '"dsh-crew-messaging"' "$DSH_HOME_DIR/profiles/$DSH_PROFILE_NAME/package.json" 2>/dev/null; then
   phase "Removing the retired dsh-crew-messaging plugin from profile $DSH_PROFILE_NAME"
@@ -378,20 +339,10 @@ phase "Validating profile $DSH_PROFILE_NAME"
   DSH_HOME="$DSH_HOME_DIR" pnpm dsh --profile "$DSH_PROFILE_NAME" --dump-config >/dev/null
 )
 
-phase "Installing crew service binaries"
-mkdir -p -- "$CREW_BIN_DIR"
-for service in "${BUILT_SERVICES[@]}"; do
-  install -m 0755 "$STAGE_DIR/$service" "$CREW_BIN_DIR/$service"
-done
-
-phase "Restarting enabled user services"
+phase "Restarting dsh-web"
 systemctl --user daemon-reload
-# Messaging and Codex remain independent prerequisites. crew-dsh reads the
-# launch token dsh web logs at start, and reconnects with it on its own.
-restart_if_enabled crew-messaging.service
-restart_if_enabled crew-codex.service
+# Only dsh web couples to DSH. crew-dsh reads the launch token dsh web logs at
+# start and reconnects with it on its own; no crew service is restarted here.
 restart_if_enabled dsh-web.service
-restart_if_enabled crew-review.service
-restart_if_enabled crew-dsh.service
 
 printf '\nUpdate complete. Profiles and service state databases were preserved.\n'
