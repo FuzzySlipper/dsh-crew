@@ -1,0 +1,4 @@
+# One route on the authenticated /api channel for crew-dsh's no_wake delivery.
+- insert:
+    - id: crew-inject
+      name: dsh-crew-inject

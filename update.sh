@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$SCRIPT_DIR"
 DSH_DIR="${DSH_SOURCE_DIR:-/home/system/dsh}"
 DSH_PROFILE_NAME="${DSH_PROFILE:-web}"
+INJECT_PLUGIN_DIR="$REPO_ROOT/plugins/crew-inject"
 
 if [[ -n "${CREW_SERVICES_DIR:-}" && "${CREW_SERVICES_DIR}" != /* ]]; then
   CREW_SERVICES_DIR="$REPO_ROOT/$CREW_SERVICES_DIR"
@@ -91,10 +92,11 @@ update_community_plugins() {
 
   sources_file="$(mktemp "${TMPDIR:-/tmp}/dsh-profile-plugins.XXXXXX")"
   inventory_file="$(mktemp "${TMPDIR:-/tmp}/dsh-profile-inventory.XXXXXX")"
-  node - "$manifest" >"$sources_file" <<'NODE'
+  node - "$manifest" "$(node -p "require('$INJECT_PLUGIN_DIR/package.json').name")" >"$sources_file" <<'NODE'
 const manifest = require(process.argv[2])
+const localPlugin = process.argv[3]
 for (const [name, raw] of Object.entries(manifest.dependencies ?? {})) {
-  if (typeof raw !== 'string') continue
+  if (name === localPlugin || typeof raw !== 'string') continue
   const spec = raw.trim()
   if (/^(?:file|link|workspace|portal):/.test(spec) || /^(?:\.{0,2}\/|\/)/.test(spec)) {
     console.log(`fixed\t${name}\t${spec}`)
@@ -221,6 +223,51 @@ update_repo() {
   fi
 }
 
+link_plugin_dependencies() {
+  local plugin_dir=$1
+  local package_name
+  local package_source
+  local package_scope
+  local package_scope_dir
+  local package_names
+  local plugin_node_modules="$plugin_dir/node_modules"
+  local workspace_packages
+
+  workspace_packages="$(mktemp "${TMPDIR:-/tmp}/dsh-workspaces.XXXXXX")"
+  (
+    cd -- "$DSH_DIR"
+    pnpm -r list --depth -1 --json
+  ) | node -e '
+      let input = ""
+      process.stdin.setEncoding("utf8")
+      process.stdin.on("data", chunk => { input += chunk })
+      process.stdin.on("end", () => {
+        for (const entry of JSON.parse(input)) console.log(`${entry.name}\t${entry.path}`)
+      })
+    ' >"$workspace_packages"
+
+  package_names="$(node -e '
+    const manifest = require(process.argv[1])
+    const dependencies = { ...manifest.peerDependencies, ...manifest.devDependencies }
+    console.log([...new Set(Object.keys(dependencies))].join("\n"))
+  ' "$plugin_dir/package.json")"
+
+  while IFS= read -r package_name; do
+    [[ -z "$package_name" ]] && continue
+    package_source="$(awk -F '\t' -v name="$package_name" '$1 == name { print $2; exit }' "$workspace_packages")"
+    if [[ -z "$package_source" ]]; then
+      package_source="$DSH_DIR/node_modules/$package_name"
+    fi
+    [[ -e "$package_source" || -L "$package_source" ]] || die "DeepSeek Harness does not provide plugin dependency: $package_name"
+    package_scope="$(dirname -- "$package_name")"
+    package_scope_dir="$plugin_node_modules/$package_scope"
+    mkdir -p -- "$package_scope_dir"
+    ln -sfn -- "$package_source" "$plugin_node_modules/$package_name"
+  done <<< "$package_names"
+
+  rm -f -- "$workspace_packages"
+}
+
 build_service() {
   local service=$1
   local source_dir="$CREW_SERVICES_DIR/cmd/$service"
@@ -262,6 +309,7 @@ require_git_repo "$REPO_ROOT" "DSH Crew"
 require_git_repo "$CREW_SERVICES_DIR" "crew-services"
 require_git_repo "$DSH_DIR" "DeepSeek Harness"
 [[ -f "$DSH_DIR/package.json" ]] || die "DeepSeek Harness package.json is missing: $DSH_DIR/package.json"
+[[ -f "$INJECT_PLUGIN_DIR/package.json" ]] || die "Crew inject plugin is missing: $INJECT_PLUGIN_DIR"
 
 SERVICE_NAMES=(crew-messaging crew-review crew-codex crew-dsh)
 for service in "${SERVICE_NAMES[@]}"; do
@@ -306,6 +354,23 @@ if grep -q '"dsh-crew-messaging"' "$DSH_HOME_DIR/profiles/$DSH_PROFILE_NAME/pack
     DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile "$DSH_PROFILE_NAME" remove dsh-crew-messaging
   )
 fi
+
+# dsh-crew-inject is the one in-process piece: crew-dsh delivers no_wake
+# messages through its route with agent.inject, which never starts a turn.
+phase "Building and installing dsh-crew-inject"
+link_plugin_dependencies "$INJECT_PLUGIN_DIR"
+(
+  cd -- "$DSH_DIR"
+  pnpm exec tsc --noEmit -p "$INJECT_PLUGIN_DIR/tsconfig.json"
+  pnpm exec tsdown --config "$INJECT_PLUGIN_DIR/tsdown.config.ts" --tsconfig "$INJECT_PLUGIN_DIR/tsconfig.json"
+)
+(
+  cd -- "$DSH_DIR"
+  # pnpm treats an unchanged-version file dependency as already installed even
+  # when its built files changed, so the plugin is re-added every time.
+  DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile "$DSH_PROFILE_NAME" remove dsh-crew-inject >/dev/null 2>&1 || true
+  DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile "$DSH_PROFILE_NAME" add "file:$INJECT_PLUGIN_DIR"
+)
 
 phase "Validating profile $DSH_PROFILE_NAME"
 (

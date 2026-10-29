@@ -51,6 +51,15 @@ session API (`scripts/install-crew-dsh.sh` there). The plugin's
 optional `dsh` backend used, went with it; crew-review runs the `codex`
 backend.
 
+`dsh-crew-inject` (`plugins/crew-inject`) is the one in-process piece left. It
+registers `POST /api/crew-inject/inject` on the host's authenticated `/api`
+channel, which calls `agent.inject` on a live root session: the message goes in
+at the next step boundary and never starts a turn. crew-dsh uses it for
+`no_wake` messages (crew-services #10454, review finding R10454-1). `update.sh`
+links its DSH dependencies, typechecks and builds it, and re-adds it to the
+profile with `file:`. After a change to it, restart `dsh-web.service`, once no
+session is running a turn.
+
 The **npm package named `dsh-plugin-installer` is a different project** from
 Toukaiteio's installed marketplace. Check the original GitHub repository
 when updating that plugin; do not replace it by matching its name on npm.
