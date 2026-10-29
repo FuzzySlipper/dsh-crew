@@ -6,7 +6,6 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$SCRIPT_DIR"
 DSH_DIR="${DSH_SOURCE_DIR:-/home/system/dsh}"
-PLUGIN_DIR="$REPO_ROOT/plugins/crew-messaging"
 DSH_PROFILE_NAME="${DSH_PROFILE:-web}"
 
 if [[ -n "${CREW_SERVICES_DIR:-}" && "${CREW_SERVICES_DIR}" != /* ]]; then
@@ -92,11 +91,10 @@ update_community_plugins() {
 
   sources_file="$(mktemp "${TMPDIR:-/tmp}/dsh-profile-plugins.XXXXXX")"
   inventory_file="$(mktemp "${TMPDIR:-/tmp}/dsh-profile-inventory.XXXXXX")"
-  node - "$manifest" "$(node -p "require('$PLUGIN_DIR/package.json').name")" >"$sources_file" <<'NODE'
+  node - "$manifest" >"$sources_file" <<'NODE'
 const manifest = require(process.argv[2])
-const localPlugin = process.argv[3]
 for (const [name, raw] of Object.entries(manifest.dependencies ?? {})) {
-  if (name === localPlugin || typeof raw !== 'string') continue
+  if (typeof raw !== 'string') continue
   const spec = raw.trim()
   if (/^(?:file|link|workspace|portal):/.test(spec) || /^(?:\.{0,2}\/|\/)/.test(spec)) {
     console.log(`fixed\t${name}\t${spec}`)
@@ -181,7 +179,6 @@ NODE
     installed="$(plugin_inventory_field "$inventory_file" "$package_name" version)"
     printf '  manual   %s %s (%s)\n' "$package_name" "${installed:-unknown}" "$source"
   done
-  printf '  managed  %s (rebuilt from %s)\n' "$(node -p "require('$PLUGIN_DIR/package.json').name")" "$PLUGIN_DIR"
 
   rm -f -- "$sources_file" "$inventory_file"
 }
@@ -222,56 +219,6 @@ update_repo() {
   if ! git -C "$directory" pull --ff-only; then
     die "$name could not fast-forward. Resolve its Git state manually; local changes were left in place."
   fi
-}
-
-link_plugin_dependencies() {
-  local package_name
-  local package_source
-  local package_scope
-  local package_scope_dir
-  local package_names
-  local plugin_node_modules="$PLUGIN_DIR/node_modules"
-  local workspace_packages
-
-  workspace_packages="$(mktemp "${TMPDIR:-/tmp}/dsh-workspaces.XXXXXX")"
-  (
-    cd -- "$DSH_DIR"
-    pnpm -r list --depth -1 --json
-  ) | node -e '
-      let input = ""
-      process.stdin.setEncoding("utf8")
-      process.stdin.on("data", chunk => { input += chunk })
-      process.stdin.on("end", () => {
-        for (const entry of JSON.parse(input)) console.log(`${entry.name}\t${entry.path}`)
-      })
-    ' >"$workspace_packages"
-
-  package_names="$(node -e '
-    const manifest = require(process.argv[1])
-    const dependencies = { ...manifest.peerDependencies, ...manifest.devDependencies }
-    console.log([...new Set(Object.keys(dependencies))].join("\n"))
-  ' "$PLUGIN_DIR/package.json")"
-
-  while IFS= read -r package_name; do
-    [[ -z "$package_name" ]] && continue
-    package_source="$(awk -F '\t' -v name="$package_name" '$1 == name { print $2; exit }' "$workspace_packages")"
-    if [[ -z "$package_source" ]]; then
-      package_source="$DSH_DIR/node_modules/$package_name"
-    fi
-    if [[ ! -e "$package_source" && ! -L "$package_source" ]]; then
-      package_source="$DSH_DIR/apps/web/node_modules/$package_name"
-    fi
-    [[ -e "$package_source" || -L "$package_source" ]] || die "DeepSeek Harness does not provide plugin dependency: $package_name"
-    package_scope="$(dirname -- "$package_name")"
-    package_scope_dir="$plugin_node_modules/$package_scope"
-    if [[ "$package_scope" != "." && -L "$package_scope_dir" ]]; then
-      rm -- "$package_scope_dir"
-    fi
-    mkdir -p -- "$package_scope_dir"
-    ln -sfn -- "$package_source" "$plugin_node_modules/$package_name"
-  done <<< "$package_names"
-
-  rm -f -- "$workspace_packages"
 }
 
 build_service() {
@@ -315,9 +262,8 @@ require_git_repo "$REPO_ROOT" "DSH Crew"
 require_git_repo "$CREW_SERVICES_DIR" "crew-services"
 require_git_repo "$DSH_DIR" "DeepSeek Harness"
 [[ -f "$DSH_DIR/package.json" ]] || die "DeepSeek Harness package.json is missing: $DSH_DIR/package.json"
-[[ -f "$PLUGIN_DIR/package.json" ]] || die "Crew messaging plugin is missing: $PLUGIN_DIR"
 
-SERVICE_NAMES=(crew-messaging crew-review crew-codex)
+SERVICE_NAMES=(crew-messaging crew-review crew-codex crew-dsh)
 for service in "${SERVICE_NAMES[@]}"; do
   if [[ -d "$CREW_SERVICES_DIR/cmd/$service" ]]; then
     require_command go
@@ -350,23 +296,16 @@ for service in "${SERVICE_NAMES[@]}"; do
   build_service "$service"
 done
 
-phase "Building and installing dsh-crew-messaging"
-printf 'Linking DSH dependencies needed by the plugin build.\n'
-link_plugin_dependencies
-(
-  cd -- "$DSH_DIR"
-  pnpm exec tsc --noEmit -p "$PLUGIN_DIR/tsconfig.json"
-  pnpm exec tsc -p "$PLUGIN_DIR/tsconfig.client.json"
-  pnpm exec tsdown --config "$PLUGIN_DIR/tsdown.config.ts" --tsconfig "$PLUGIN_DIR/tsconfig.json"
-)
-(
-  cd -- "$DSH_DIR"
-  # pnpm treats an unchanged-version file dependency as already installed even
-  # when its built files changed. Re-add the one local plugin so the profile
-  # receives the freshly built bundle every time.
-  DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile "$DSH_PROFILE_NAME" remove dsh-crew-messaging >/dev/null 2>&1 || true
-  DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile "$DSH_PROFILE_NAME" add "file:$PLUGIN_DIR"
-)
+# The in-process dsh-crew-messaging plugin is retired: crew-dsh (built above
+# from crew-services) delivers crew messages through the dsh web session API.
+# Drop it from a profile that still lists it.
+if grep -q '"dsh-crew-messaging"' "$DSH_HOME_DIR/profiles/$DSH_PROFILE_NAME/package.json" 2>/dev/null; then
+  phase "Removing the retired dsh-crew-messaging plugin from profile $DSH_PROFILE_NAME"
+  (
+    cd -- "$DSH_DIR"
+    DSH_HOME="$DSH_HOME_DIR" pnpm dsh plugin --profile "$DSH_PROFILE_NAME" remove dsh-crew-messaging
+  )
+fi
 
 phase "Validating profile $DSH_PROFILE_NAME"
 (
@@ -382,11 +321,12 @@ done
 
 phase "Restarting enabled user services"
 systemctl --user daemon-reload
-# The DSH-backed reviewer client is intentionally restarted only after the
-# plugin route is live. Messaging and Codex remain independent prerequisites.
+# Messaging and Codex remain independent prerequisites. crew-dsh reads the
+# launch token dsh web logs at start, and reconnects with it on its own.
 restart_if_enabled crew-messaging.service
 restart_if_enabled crew-codex.service
 restart_if_enabled dsh-web.service
 restart_if_enabled crew-review.service
+restart_if_enabled crew-dsh.service
 
 printf '\nUpdate complete. Profiles and service state databases were preserved.\n'

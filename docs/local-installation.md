@@ -36,13 +36,20 @@ come from the checkout. The external sources are:
 
 | Plugin | Source |
 | --- | --- |
-| `dsh-crew-messaging` | This repository's `plugins/crew-messaging`, rebuilt against current DSH |
 | `@local/dsh-drift-preset` | `/home/agent/drift-preset` |
 | `@hytime/dsh-thinking-effort` | npm |
 | `dsh-cost-meter` | `Han-1413141/dsh-cost-meter` on GitHub |
 | `dsh-web-lan-access` | `AcidGr/dsh-web-lan-access` on GitHub; upstream includes our former fork's browser bootstrap change |
 | `dsh-plugin-installer` | Toukaiteio's 0.2.0 archive in `~/.dsh/plugin-archives/dsh-plugin-installer` |
 | `dsh-web-preview-panel` | npm |
+
+`dsh-crew-messaging` (this repository's `plugins/crew-messaging`) is retired
+and no longer installed or built (crew-services #10454). Crew messages reach DSH
+sessions through `crew-dsh` from crew-services, which uses the `dsh web`
+session API (`scripts/install-crew-dsh.sh` there). The plugin's
+`/plugins/dsh-crew-messaging/reviewer-runtime` route, which crew-review's
+optional `dsh` backend used, went with it; crew-review runs the `codex`
+backend.
 
 The **npm package named `dsh-plugin-installer` is a different project** from
 Toukaiteio's installed marketplace. Check the original GitHub repository
