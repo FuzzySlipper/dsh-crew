@@ -87,7 +87,7 @@ The updater restarts only `dsh-web.service`. It no longer builds, installs or
 restarts any crew-services binary (crew-services #10379): deploy those with
 crew-services `scripts/deploy-crew-services.sh`, which restarts crew-review
 only when its review pool is idle. `crew-dsh` reads the new `dsh web` launch
-token and reconnects by itself after a `dsh-web` restart. The owner is moving
+token and reconnects by itself after a `dsh-web` restart. Patch is moving
 DSH refreshes to a staged build/flip process run from Hermes; keep that same
 split there (DSH, its plugins and `dsh-crew-inject`, then `dsh-web` only).
 
