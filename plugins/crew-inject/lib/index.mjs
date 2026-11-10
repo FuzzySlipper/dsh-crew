@@ -19,10 +19,10 @@ async function handle(ctx, request) {
 		code: "gateway/bad-request",
 		message: "sessionId, requestId and non-empty content are required"
 	});
-	const agent = ctx.agents.roots().find((candidate) => candidate.id === body.sessionId);
-	if (agent === void 0) return reply(409, {
+	const agent = ctx.agents.get(body.sessionId);
+	if (agent === void 0 || agent.session.header.origin === "subagent") return reply(409, {
 		accepted: false,
-		code: ctx.agents.get(body.sessionId) === void 0 ? "session/not-loaded" : "session/subagent",
+		code: agent === void 0 ? "session/not-loaded" : "session/subagent",
 		message: `session "${body.sessionId}" has no live root agent`
 	});
 	if (holdsRequest(agent, body.requestId)) return reply(200, {
