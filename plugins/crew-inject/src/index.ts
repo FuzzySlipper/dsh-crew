@@ -40,10 +40,12 @@ export function apply(ctx: Context): void {
 async function handle(ctx: Context, request: Request): Promise<Response> {
   const body = parse(await request.json().catch(() => undefined))
   if (body === undefined) return reply(400, { accepted: false, code: 'gateway/bad-request', message: 'sessionId, requestId and non-empty content are required' })
-  const agent = ctx.agents.roots().find(candidate => candidate.id === body.sessionId as SessionId)
-  if (agent === undefined) {
+  const agent = ctx.agents.get(body.sessionId as SessionId)
+  // Subagent lineage moved out of the agent registry (DSH 0.2.2); a session
+  // that a subagent runs in still says so in its header.
+  if (agent === undefined || agent.session.header.origin === 'subagent') {
     // Never 404: crew-dsh reads a 404 as this route not being installed.
-    const code = ctx.agents.get(body.sessionId as SessionId) === undefined ? 'session/not-loaded' : 'session/subagent'
+    const code = agent === undefined ? 'session/not-loaded' : 'session/subagent'
     return reply(409, { accepted: false, code, message: `session "${body.sessionId}" has no live root agent` })
   }
   // The check and the insertion run without an await between them, so a
